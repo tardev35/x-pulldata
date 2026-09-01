@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+db.py — SQLite ของ x-pulldata: เก็บโพสต์ที่สกัดแล้ว + คลังคีย์เวิร์ด + log การรัน
+
+ทุกฟังก์ชันเปิด/ปิด connection เอง กันปัญหา sqlite ข้ามเธรด (server เป็น ThreadingHTTPServer)
+เขียนผ่าน _lock ตัวเดียว กัน "database is locked" ตอน collector เขียนพร้อม browser อ่าน
+"""
+
+import json
+import sqlite3
+import threading
+import time
+
+from config import DB_PATH
+
+_lock = threading.Lock()
+
+
+def _con():
+    DB_PATH.parent.mkdir(exist_ok=True)
+    con = sqlite3.connect(str(DB_PATH), timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=WAL")       # อ่าน/เขียนพร้อมกันได้ ไม่ล็อกกันตาย
+    return con
+
+
+def init():
+    with _lock, _con() as con:
+        con.execute("""CREATE TABLE IF NOT EXISTS posts(
+            tweet_id     TEXT PRIMARY KEY,
+            tweet_url    TEXT,
+            created_at   TEXT,          -- วันเวลาโพสต์ (ISO ถ้าแปลงได้)
+            author       TEXT,
+            location     TEXT,
+            text         TEXT,          -- แคปชั่นเต็ม
+            brand_name   TEXT,          -- ชื่อแบรนด์ที่ AI สกัด
+            final_brand  TEXT,          -- แบรนด์จากโดเมนจริงหลัง resolve
+            promotions   TEXT,          -- json array
+            keywords     TEXT,          -- json array (marketing_keywords)
+            cta          TEXT,
+            url_landing  TEXT,          -- URL จากแคปชั่น (มักเป็น t.co)
+            url_landing_2 TEXT,         -- URL จาก bio/description
+            final_url    TEXT,          -- ปลายทางจริงหลังตามลิงก์
+            line_id      TEXT,          -- Line@ ถ้าเจอในแคปชั่น
+            preview_img  TEXT,          -- รูปแนบทวีต
+            video_url    TEXT,          -- วิดีโอแนบทวีต (mp4)
+            is_gambling  INTEGER DEFAULT 1,
+            search_term  TEXT,
+            ingested_at  INTEGER,
+            raw          TEXT )""")     # raw = ผลสกัดดิบเผื่อดีบัก
+        con.execute("""CREATE TABLE IF NOT EXISTS keywords(
+            term      TEXT PRIMARY KEY,
+            source    TEXT DEFAULT 'seed',   -- seed = ตั้งเอง, ai = โผล่จาก marketing_keywords
+            active    INTEGER DEFAULT 1,
+            added_at  INTEGER,
+            last_run  INTEGER DEFAULT 0,
+            hits      INTEGER DEFAULT 0 )""")
+        con.execute("""CREATE TABLE IF NOT EXISTS runs(
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            term      TEXT,
+            started   INTEGER,
+            scraped   INTEGER DEFAULT 0,   -- ทวีตที่ดึงมา
+            added     INTEGER DEFAULT 0,   -- บันทึกใหม่จริง
+            skipped   INTEGER DEFAULT 0,   -- ซ้ำ/ไม่ใช่พนัน
+            note      TEXT )""")
+        con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ing ON posts(ingested_at DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS ix_posts_brand ON posts(final_brand)")
+
+
+def _j(v):
+    return json.dumps(v if v is not None else [], ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- posts
+def post_exists(tweet_id):
+    with _con() as con:
+        return con.execute("SELECT 1 FROM posts WHERE tweet_id=?", (str(tweet_id),)).fetchone() is not None
+
+
+def upsert_post(p):
+    """p = dict ครบทุกคอลัมน์ (ยกเว้น ingested_at ที่เติมให้) — คืน True ถ้าเป็นแถวใหม่"""
+    new = not post_exists(p.get("tweet_id"))
+    with _lock, _con() as con:
+        con.execute("""INSERT INTO posts(
+            tweet_id,tweet_url,created_at,author,location,text,brand_name,final_brand,
+            promotions,keywords,cta,url_landing,url_landing_2,final_url,line_id,
+            preview_img,video_url,is_gambling,search_term,ingested_at,raw)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(tweet_id) DO UPDATE SET
+            final_brand=excluded.final_brand, final_url=excluded.final_url,
+            brand_name=excluded.brand_name, promotions=excluded.promotions,
+            keywords=excluded.keywords, cta=excluded.cta,
+            url_landing=excluded.url_landing, url_landing_2=excluded.url_landing_2,
+            line_id=excluded.line_id, is_gambling=excluded.is_gambling""",
+            (str(p.get("tweet_id")), p.get("tweet_url"), p.get("created_at"), p.get("author"),
+             p.get("location"), p.get("text"), p.get("brand_name"), p.get("final_brand"),
+             _j(p.get("promotions")), _j(p.get("keywords")), p.get("cta"),
+             p.get("url_landing"), p.get("url_landing_2"), p.get("final_url"), p.get("line_id"),
+             p.get("preview_img"), p.get("video_url"), 1 if p.get("is_gambling", True) else 0,
+             p.get("search_term"), int(time.time()), _j(p.get("raw"))))
+    return new
+
+
+def recent_posts(limit=3000):
+    with _con() as con:
+        rows = con.execute(
+            "SELECT * FROM posts ORDER BY ingested_at DESC LIMIT ?", (int(limit),)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("promotions", "keywords"):
+            try:
+                d[k] = json.loads(d[k] or "[]")
+            except Exception:
+                d[k] = []
+        d.pop("raw", None)
+        out.append(d)
+    return out
+
+
+# ---------------------------------------------------------------- keywords
+def add_keywords(terms, source="ai"):
+    """เติมคีย์เวิร์ดใหม่ (ไม่ทับของเดิม) — คืนจำนวนที่เพิ่มจริง"""
+    n = 0
+    now = int(time.time())
+    with _lock, _con() as con:
+        for t in terms:
+            t = (t or "").strip()
+            if not t or len(t) > 80:
+                continue
+            cur = con.execute(
+                "INSERT OR IGNORE INTO keywords(term,source,active,added_at) VALUES(?,?,1,?)",
+                (t, source, now))
+            n += cur.rowcount
+    return n
+
+
+def active_keywords():
+    with _con() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM keywords WHERE active=1 ORDER BY last_run ASC, added_at ASC")]
+
+
+def all_keywords():
+    with _con() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM keywords ORDER BY hits DESC, added_at DESC")]
+
+
+def set_keyword(term, active=None):
+    with _lock, _con() as con:
+        if active is not None:
+            con.execute("UPDATE keywords SET active=? WHERE term=?", (1 if active else 0, term))
+
+
+def mark_keyword_run(term, hits_added):
+    with _lock, _con() as con:
+        con.execute("UPDATE keywords SET last_run=?, hits=hits+? WHERE term=?",
+                    (int(time.time()), int(hits_added), term))
+
+
+# ---------------------------------------------------------------- runs / stats
+def log_run(term, scraped, added, skipped, note=""):
+    with _lock, _con() as con:
+        con.execute("INSERT INTO runs(term,started,scraped,added,skipped,note) VALUES(?,?,?,?,?,?)",
+                    (term, int(time.time()), scraped, added, skipped, note))
+
+
+def stats():
+    with _con() as con:
+        total = con.execute("SELECT COUNT(*) FROM posts").fetchone()[0]
+        gambling = con.execute("SELECT COUNT(*) FROM posts WHERE is_gambling=1").fetchone()[0]
+        brands = con.execute(
+            "SELECT COUNT(DISTINCT final_brand) FROM posts WHERE final_brand IS NOT NULL AND final_brand!=''").fetchone()[0]
+        kw = con.execute("SELECT COUNT(*) FROM keywords WHERE active=1").fetchone()[0]
+        last = con.execute("SELECT MAX(ingested_at) FROM posts").fetchone()[0]
+    return {"total": total, "gambling": gambling, "not_gambling": total - gambling,
+            "brands": brands, "keywords": kw, "last_ingest": last}
+
+
+def purge(days):
+    if not days or int(days) <= 0:
+        return 0
+    cut = int(time.time()) - int(days) * 86400
+    with _lock, _con() as con:
+        cur = con.execute("DELETE FROM posts WHERE ingested_at < ?", (cut,))
+        return cur.rowcount

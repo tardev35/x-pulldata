@@ -1,0 +1,14 @@
+# ความลับ — ห้ามขึ้น git
+.env
+
+# ฐานข้อมูล + ไฟล์ชั่วคราวของ SQLite
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/

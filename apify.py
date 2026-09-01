@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""
+apify.py — เรียก Apify actor จากโค้ด (แทนที่ node ใน n8n)
+
+สองงาน:
+  1) scrape(term)      -> รัน twitter-scraper-lite แบบ sync ได้ทวีตกลับมาเป็นลิสต์เลย
+  2) resolve(urls)     -> รัน playwright-scraper ตามลิงก์สั้น (t.co/bit.ly/tinyurl) ไปโดเมนจริง
+
+ใช้ urllib ล้วน (ไม่มี dependency) · endpoint run-sync-get-dataset-items คืน dataset ตรง ๆ
+"""
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+
+from config import APIFY_BASE, ENV, actor_path
+
+UA = {"User-Agent": "x-pulldata/1.0"}
+
+
+def _run_sync(actor, payload, timeout=300):
+    """POST run-sync-get-dataset-items -> คืน (items, error)"""
+    token = ENV["apify_token"]
+    if not token:
+        return [], "ยังไม่ได้ตั้ง APIFY_TOKEN (ดู .env)"
+    url = "%s/acts/%s/run-sync-get-dataset-items?token=%s" % (
+        APIFY_BASE, actor_path(actor), urllib.parse.quote(token, safe=""))
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body,
+                                 headers={**UA, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+    except urllib.error.HTTPError as ex:
+        return [], "Apify %s: %s" % (ex.code, ex.read()[:200].decode("utf-8", "ignore"))
+    except Exception as ex:
+        return [], "เรียก Apify ไม่ได้: %s" % ex
+    return (data if isinstance(data, list) else []), None
+
+
+# ---------------------------------------------------------------- 1) scrape
+def scrape(term, max_items=None):
+    """ค้น X ตามคีย์เวิร์ด -> ลิสต์ทวีตดิบ (เหมือน body ที่ตั้งไว้ใน n8n)"""
+    n = int(max_items or ENV.get("max_items") or 100)
+    payload = {
+        "searchTerms": [term],
+        "includeSearchTerms": False,
+        "maxItems": n,
+        "sort": "Latest",
+        "tweetLanguage": "th",
+    }
+    return _run_sync(ENV["scraper_actor"], payload, timeout=300)
+
+
+# ---------------------------------------------------------------- 2) resolve
+# pageFunction ยกจาก n8n เดิม แต่เพิ่มการคืน request.url เพื่อให้ resolve หลายลิงก์ในรันเดียวได้
+# (แล้วค่อย map ผลกลับเข้าโพสต์ด้วย requestUrl) — ประหยัดกว่ายิง actor ทีละลิงก์มาก
+_PAGE_FN = """async ({ page, request }) => {
+  try {
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    const currentUrl = page.url();
+    if (!currentUrl || currentUrl.includes('google.com') || currentUrl.includes('shorturl.asia') || currentUrl.includes('tinyurl.com')) {
+      return { requestUrl: request.url, finalUrl: 'ดึงไม่สำเร็จ', brandName: '(หาไม่เจอ)' };
+    }
+    let brand = '';
+    try { brand = currentUrl.split('/')[2].replace('www.', '').split('.')[0]; }
+    catch (e) { brand = '(หาไม่เจอ)'; }
+    return { requestUrl: request.url, finalUrl: currentUrl, brandName: brand };
+  } catch (e) {
+    return { requestUrl: request.url, finalUrl: 'ระบบขัดข้อง', brandName: '(หาไม่เจอ)' };
+  }
+}"""
+
+_PRE_NAV = """[
+  async ({ page, request }, gotoOptions) => {
+    gotoOptions.waitUntil = 'domcontentloaded';
+    gotoOptions.timeout = 30000;
+  }
+]"""
+
+
+def resolve(urls, timeout=300):
+    """ตามลิงก์หลายอันในรันเดียว -> dict {requestUrl: {finalUrl, brandName}}"""
+    urls = [u for u in dict.fromkeys(urls) if u]      # unique รักษาลำดับ
+    if not urls:
+        return {}, None
+    proxy = {"useApifyProxy": True}
+    if ENV.get("proxy_url"):
+        proxy = {"proxyUrls": [ENV["proxy_url"]]}     # residential ของ BestProxy
+    payload = {
+        "startUrls": [{"url": u} for u in urls],
+        "ignoreSslErrors": True,
+        "proxyConfiguration": proxy,
+        "pageFunction": _PAGE_FN,
+        "preNavigationHooks": _PRE_NAV,
+        "pageLoadTimeoutSecs": 30,
+        "navigationTimeoutSecs": 30,
+        "maxRequestRetries": 2,
+        "maxConcurrency": 5,
+    }
+    items, err = _run_sync(ENV["resolver_actor"], payload, timeout=timeout)
+    if err:
+        return {}, err
+    out = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("requestUrl"):
+            out[it["requestUrl"]] = {"finalUrl": it.get("finalUrl"),
+                                     "brandName": it.get("brandName")}
+    return out, None
