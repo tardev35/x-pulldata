@@ -33,13 +33,17 @@
 - [x] หน้าเว็บตาราง 11 คอลัมน์ + sidebar กรอง + ปุ่มดึง + log สด
 - [x] compile ผ่าน + smoke test DB/fields ผ่าน
 
-## รอทดสอบกับของจริง (ต้องมีคีย์ API)
-- [ ] ยิง Apify scrape จริง 1 คีย์เวิร์ด ดูรูปร่างฟิลด์ว่าตรง `fields.py` (ปรับ path ถ้าคลาด)
-- [ ] resolver actor: ยืนยันว่า `apify/playwright-scraper` รับ input ชุดนี้ (ถ้าใช้ actor อื่น แก้ `APIFY_RESOLVER_ACTOR`)
-- [ ] ตรวจโมเดล OpenRouter (`OPENROUTER_MODEL`) ให้ตรงกับที่ใช้ใน n8n
+## ทดสอบกับของจริงแล้ว ✅ (2026-09-02)
+- [x] Apify scrape จริง — ฟิลด์ตรง `fields.py` ทุกตัว (id/url/media/cap_url/ref_url2); apidojo คลี่
+      t.co เป็น `expanded_url` มาให้แล้ว · `author.location` มักว่าง (`''`) -> คืน None ถูกต้อง
+- [x] resolver `apify/playwright-scraper` + **webshare proxy** — ตาม t.co ไปโดเมนจริงได้
+      (t.co -> osiris168.com, chopper88.dev) map กลับด้วย `request.url` ถูก
+- [x] โมเดล `openai/gpt-4.1-mini` — สกัด brand/keywords ได้ + วน +11 คีย์เวิร์ดใหม่เข้าคลัง
+- [x] เพิ่ม optimize: resolve เฉพาะ shortener/bio-link (โดเมนจริงใช้เลย) — คุมด้วย `RESOLVE_ALL`
+- [x] multi-proxy: `PROXY_URL` คั่น comma -> actor หมุนสลับ
 
 ## ไอเดียต่อยอด (ยังไม่ทำ)
 - ปุ่ม toggle เปิด/ปิดคีย์เวิร์ดบน sidebar (API `/api/keyword` มีแล้ว รอผูกปุ่ม)
 - export CSV/สรุปแบรนด์ยอดฮิต + กราฟจำนวนโพสต์ต่อวัน
-- resolve แบบ 2 ชั้น: ลอง follow redirect เองก่อน (ฟรี) ค่อย fallback Apify (ลดค่าใช้จ่าย)
+- resolve ชั้นแรกลอง follow redirect เองในโค้ด (ฟรี) ค่อย fallback Apify (ลดค่าใช้จ่ายอีก)
 - แจ้งเตือน (LINE Notify/webhook) เมื่อเจอแบรนด์/โปรใหม่

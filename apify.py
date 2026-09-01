@@ -87,7 +87,10 @@ def resolve(urls, timeout=300):
         return {}, None
     proxy = {"useApifyProxy": True}
     if ENV.get("proxy_url"):
-        proxy = {"proxyUrls": [ENV["proxy_url"]]}     # residential ของ BestProxy
+        # PROXY_URL รับได้หลายตัวคั่นด้วย comma -> actor หมุนสลับให้ (เช่น webshare TH หลาย session)
+        plist = [u.strip() for u in ENV["proxy_url"].split(",") if u.strip()]
+        if plist:
+            proxy = {"proxyUrls": plist}
     payload = {
         "startUrls": [{"url": u} for u in urls],
         "ignoreSslErrors": True,

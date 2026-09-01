@@ -12,12 +12,44 @@ pipeline.py — ท่อหลัก: สแครป -> สกัด (AI) -> �
 """
 
 import re
+import urllib.parse
 
 import apify
 import db
 import extract
-from config import NOT_GAMBLING
+from config import ENV, NOT_GAMBLING
 from fields import extract_fields, media
+
+# ลิงก์สั้น/รวมลิงก์ (bio-link) ที่ต้องตามต่อจริง — apidojo คลี่ t.co ให้แล้ว แต่พวกนี้ยังเป็นด่านกลาง
+SHORTENERS = {
+    "t.co", "bit.ly", "tinyurl.com", "cutt.ly", "shorturl.asia", "shorturl.at", "rb.gy",
+    "gg.gg", "s.id", "is.gd", "ow.ly", "lnkd.in", "reurl.cc",
+    "heylink.me", "hopp.bio", "linktr.ee", "lit.link", "bio.link", "beacons.ai",
+    "allmylinks.com", "msha.ke", "komi.io", "solo.to", "taplink.cc", "linkr.bio", "direc.to",
+}
+
+
+def _host(url):
+    try:
+        h = (urllib.parse.urlparse(url).hostname or "").lower()
+        return h[4:] if h.startswith("www.") else h
+    except Exception:
+        return ""
+
+
+def _brand_of(url):
+    """joker388th.com -> joker388th (เหมือน pageFunction ของ resolver)"""
+    h = _host(url)
+    return h.split(".")[0] if h else None
+
+
+def _needs_resolve(url):
+    if ENV.get("resolve_all") == "1":
+        return True
+    h = _host(url)
+    if not h:
+        return False
+    return h in SHORTENERS or any(h.endswith("." + s) for s in SHORTENERS)
 
 
 def _best_landing(fld, ai):
@@ -83,12 +115,16 @@ def run_keyword(term, log=print):
                 if n:
                     new_kw.add(n)
             landing = _best_landing(fld, ai)
-            if landing:
+            if landing and _needs_resolve(landing):
                 to_resolve.setdefault(landing, []).append(tid)
                 pending[tid] = (rec, landing)
-                continue          # บันทึกทีหลังพร้อมโดเมนจริง
+                continue          # เป็น shortener -> บันทึกทีหลังพร้อมโดเมนจริง
+            if landing:
+                # apidojo คลี่เป็นโดเมนจริงมาแล้ว ใช้ได้เลย ไม่ต้องเปลือง resolver
+                rec["final_url"] = landing
+                rec["final_brand"] = _brand_of(landing)
 
-        # ไม่ใช่พนัน หรือ ไม่มีลิงก์ให้ตาม -> บันทึกเลย
+        # ไม่ใช่พนัน / ไม่มีลิงก์ / โดเมนจริงอยู่แล้ว -> บันทึกเลย
         if db.upsert_post(rec):
             added += 1
 

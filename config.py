@@ -30,6 +30,7 @@ def load_env():
         "model":           os.environ.get("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite"),
         "proxy_url":       os.environ.get("PROXY_URL", ""),      # residential proxy สำหรับ resolver
         "max_items":       os.environ.get("MAX_ITEMS", "100"),
+        "resolve_all":     os.environ.get("RESOLVE_ALL", ""),   # 1 = resolve ทุกลิงก์ (default: เฉพาะ shortener)
         "collect":         os.environ.get("COLLECTOR", ""),
         "collect_cycle":   os.environ.get("COLLECT_CYCLE", ""),
         "retain_days":     os.environ.get("RETAIN_DAYS", "0"),   # 0 = ไม่ลบทิ้ง
@@ -40,7 +41,8 @@ def load_env():
             "APIFY_TOKEN": "apify_token", "APIFY_SCRAPER_ACTOR": "scraper_actor",
             "APIFY_RESOLVER_ACTOR": "resolver_actor", "OPENROUTER_API_KEY": "or_key",
             "OPENROUTER_MODEL": "model", "PROXY_URL": "proxy_url", "MAX_ITEMS": "max_items",
-            "COLLECTOR": "collect", "COLLECT_CYCLE": "collect_cycle", "RETAIN_DAYS": "retain_days",
+            "RESOLVE_ALL": "resolve_all", "COLLECTOR": "collect",
+            "COLLECT_CYCLE": "collect_cycle", "RETAIN_DAYS": "retain_days",
         }
         for line in f.read_text(encoding="utf-8").splitlines():
             line = line.strip()
