@@ -34,6 +34,7 @@ def load_env():
         "collect":         os.environ.get("COLLECTOR", ""),
         "collect_cycle":   os.environ.get("COLLECT_CYCLE", ""),
         "retain_days":     os.environ.get("RETAIN_DAYS", "0"),   # 0 = ไม่ลบทิ้ง
+        "llm_workers":     os.environ.get("LLM_WORKERS", "8"),   # ยิง LLM ขนานกี่เธรด
     }
     f = HERE / ".env"
     if f.exists():
@@ -43,6 +44,7 @@ def load_env():
             "OPENROUTER_MODEL": "model", "PROXY_URL": "proxy_url", "MAX_ITEMS": "max_items",
             "RESOLVE_ALL": "resolve_all", "COLLECTOR": "collect",
             "COLLECT_CYCLE": "collect_cycle", "RETAIN_DAYS": "retain_days",
+            "LLM_WORKERS": "llm_workers",
         }
         for line in f.read_text(encoding="utf-8").splitlines():
             line = line.strip()

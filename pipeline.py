@@ -12,21 +12,29 @@ pipeline.py — ท่อหลัก: สแครป -> สกัด (AI) -> �
 """
 
 import re
+import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 
 import apify
 import db
 import extract
+import follow
 from config import ENV, NOT_GAMBLING
 from fields import extract_fields, media
 
-# ลิงก์สั้น/รวมลิงก์ (bio-link) ที่ต้องตามต่อจริง — apidojo คลี่ t.co ให้แล้ว แต่พวกนี้ยังเป็นด่านกลาง
-SHORTENERS = {
+# ตัวเปลี่ยนทางล้วน — ตามด้วย urllib ได้ฟรี ไม่ต้องเปิดเบราว์เซอร์
+REDIRECTORS = {
     "t.co", "bit.ly", "tinyurl.com", "cutt.ly", "shorturl.asia", "shorturl.at", "rb.gy",
     "gg.gg", "s.id", "is.gd", "ow.ly", "lnkd.in", "reurl.cc",
-    "heylink.me", "hopp.bio", "linktr.ee", "lit.link", "bio.link", "beacons.ai",
-    "allmylinks.com", "msha.ke", "komi.io", "solo.to", "taplink.cc", "linkr.bio", "direc.to",
 }
+# หน้า bio-link (ต้องคลิกเอง ไม่มีปลายทางเดียว) — ถือว่านี่คือ landing จริงของโฆษณาแล้ว
+BIOLINKS = {
+    "heylink.me", "hopp.bio", "linktr.ee", "lit.link", "bio.link", "beacons.ai",
+    "allmylinks.com", "msha.ke", "komi.io", "solo.to", "taplink.cc", "linkr.bio",
+    "direc.to", "carrd.co",
+}
+SHORTENERS = REDIRECTORS | BIOLINKS
 
 
 def _host(url):
@@ -43,27 +51,117 @@ def _brand_of(url):
     return h.split(".")[0] if h else None
 
 
+def _in(url, hosts):
+    h = _host(url)
+    return bool(h) and (h in hosts or any(h.endswith("." + s) for s in hosts))
+
+
+def _is_short(url):
+    return _in(url, SHORTENERS)
+
+
 def _needs_resolve(url):
     if ENV.get("resolve_all") == "1":
         return True
-    h = _host(url)
-    if not h:
-        return False
-    return h in SHORTENERS or any(h.endswith("." + s) for s in SHORTENERS)
+    return _is_short(url)
 
 
 def _best_landing(fld, ai):
-    """เลือกลิงก์ที่ควรตามต่อ: url_landing ที่ AI ให้ก่อน แล้วค่อยลิงก์ดิบในแคปชั่น/bio"""
-    for v in (ai.get("url_landing"), fld.get("cap_url"),
-              ai.get("url_landing_2"), fld.get("ref_url"), fld.get("ref_url2")):
-        if v and str(v).startswith("http"):
-            return str(v)
-    return None
+    """เลือกลิงก์ที่ควรตามต่อ
+
+    X แทนลิงก์ในแคปชั่นด้วย t.co เสมอ AI จึงมักตอบ t.co กลับมา ทั้งที่ API ส่ง "ลิงก์จริง"
+    ที่คนโพสต์วางไว้มาให้แล้วใน entities (= cap_url) เลยต้องเอา cap_url ขึ้นก่อน
+    แล้วค่อยไล่หาอันที่ไม่ใช่ลิงก์สั้น ก่อนจะยอมใช้ลิงก์สั้นเป็นทางเลือกสุดท้าย"""
+    cands = [fld.get("cap_url"), ai.get("url_landing"), ai.get("url_landing_2"),
+             fld.get("ref_url"), fld.get("ref_url2")]
+    cands = [str(v) for v in cands if v and str(v).startswith("http")]
+    for v in cands:                       # โดเมนจริง = จบเลย ไม่ต้องตามต่อ
+        if not _is_short(v):
+            return v
+    for v in cands:                       # เหลือแต่ลิงก์สั้น: t.co ไว้ท้ายสุด (มันแค่เปลือกของ X)
+        if _host(v) != "t.co":
+            return v
+    return cands[0] if cands else None
 
 
 def _norm_kw(term):
     term = re.sub(r"^#", "", (term or "").strip())
     return term if 1 < len(term) <= 80 else None
+
+
+def _extract_many(flds, log=print):
+    """ยิง LLM ทีละโพสต์คือคอขวด (รอ network ไม่ใช่ CPU) — เธรดพูลเลยช่วยได้ตรง ๆ
+    คืนผลเรียงลำดับเดิมเสมอ เพื่อ zip กลับเข้าคู่กับทวีตได้"""
+    if not flds:
+        return []
+    n = max(1, int(ENV.get("llm_workers") or 8))
+    if len(flds) == 1 or n == 1:
+        return [_safe_extract(f) for f in flds]
+    log("[ai] สกัด %d โพสต์ (ขนาน %d เธรด)" % (len(flds), n))
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        out = list(pool.map(_safe_extract, flds))
+    log("[ai] เสร็จใน %.0f วิ (เฉลี่ย %.1f วิ/โพสต์)" % (time.time() - t0, (time.time() - t0) / len(flds)))
+    return out
+
+
+def _safe_extract(f):
+    try:
+        return extract.extract(f)
+    except Exception as ex:
+        return {"_error": "extract ล้ม: %s" % ex}
+
+
+def _resolve_urls(urls, log=print):
+    """ตามลิงก์ให้ถึงโดเมนจริง — urllib ก่อน (ฟรี เร็วกว่าหลายสิบเท่า) เหลือเท่าไรค่อยจ่ายให้ Apify
+    คืน {url เดิม: (final_url, brand)}"""
+    urls = [u for u in dict.fromkeys(urls) if u]
+    out = {}
+    if not urls:
+        return out
+    t0 = time.time()
+    got = follow.many(urls, workers=int(ENV.get("llm_workers") or 8))
+    left = []
+    for u in urls:
+        fu = (got.get(u) or (None, None))[0]
+        # ตามจนพ้นตัวเปลี่ยนทางแล้ว = ใช้ได้เลย (หน้า bio-link ถือเป็น landing จริงของโฆษณา)
+        if fu and not _in(fu, REDIRECTORS):
+            out[u] = (fu, _brand_of(fu))
+        else:
+            left.append(u)
+    log("[resolve] urllib ตามได้ %d/%d ลิงก์ ใน %.1f วิ (ฟรี)" % (len(out), len(urls), time.time() - t0))
+    if left:
+        log("[resolve] ส่งต่อ Apify อีก %d ลิงก์ (มีค่าใช้จ่าย)" % len(left))
+        res, err = apify.resolve(left)
+        if err:
+            log("  [resolve] Apify error: %s" % err)
+            res = {}
+        for u in left:
+            r = res.get(u) or {}
+            fu = r.get("finalUrl")
+            if fu and fu not in ("ดึงไม่สำเร็จ", "ระบบขัดข้อง"):
+                out[u] = (fu, r.get("brandName"))
+    return out
+
+
+def resolve_pending(limit=None, log=print):
+    """กวาดโพสต์เก่าที่ยังไม่รู้โดเมนจริง (แท็บ 'รอหาโดเมน')
+
+    รอบสแครปปกติจะไม่แตะโพสต์เหล่านี้อีกเลย เพราะข้ามด้วย tweet_id ไปแล้ว
+    ถ้าไม่มีตัวกวาดนี้ ของที่ resolve พลาดรอบแรกจะค้างถาวร"""
+    rows = db.pending_landing(limit)
+    if not rows:
+        log("[pending] ไม่มีโพสต์ค้าง")
+        return {"pending": 0, "fixed": 0}
+    log("[pending] โพสต์รอหาโดเมน %d แถว" % len(rows))
+    resolved = _resolve_urls([r["url_landing"] for r in rows], log)
+    fixed = 0
+    for r in rows:
+        fu, brand = resolved.get(r["url_landing"]) or (None, None)
+        if fu and db.set_final(r["tweet_id"], fu, brand):
+            fixed += 1
+    log("[pending] เติมโดเมนจริงให้ %d แถว (เหลือค้าง %d)" % (fixed, len(rows) - fixed))
+    return {"pending": len(rows), "fixed": fixed}
 
 
 def run_keyword(term, log=print):
@@ -78,15 +176,23 @@ def run_keyword(term, log=print):
     added = skipped = 0
     to_resolve = {}      # landing_url -> [tweet_id, ...] ที่ต้องอัปเดตด้วยผล resolve
     pending = {}         # tweet_id -> record ที่รอ resolve
+    got_url = {}         # tweet_id -> (final_url, brand) ที่รู้แล้วในรอบนี้
+    no_link = []         # (tweet_id, ทวีตแม่) ของโพสต์พนันที่ไม่มีลิงก์ในตัวเอง
     new_kw = set()
 
+    # เฟส 1: คัดเฉพาะทวีตที่ยังไม่มีใน DB (ไม่แตะเน็ต จบเร็ว)
+    fresh = []
     for it in tweets:
         fld = extract_fields(it)
         tid = fld.get("tweet_id")
         if not tid or db.post_exists(tid):
             skipped += 1
             continue
-        ai = extract.extract(fld)
+        fresh.append((it, fld))
+
+    # เฟส 2: สกัดด้วย AI ขนานกัน แล้วค่อยวนบันทึกทีละตัว (เขียน DB ในเธรดเดียวเหมือนเดิม)
+    for (it, fld), ai in zip(fresh, _extract_many([f for _, f in fresh], log)):
+        tid = fld["tweet_id"]
         if "_error" in ai:
             log("  [ai] %s -> %s" % (tid, ai["_error"]))
             skipped += 1
@@ -123,6 +229,9 @@ def run_keyword(term, log=print):
                 # apidojo คลี่เป็นโดเมนจริงมาแล้ว ใช้ได้เลย ไม่ต้องเปลือง resolver
                 rec["final_url"] = landing
                 rec["final_brand"] = _brand_of(landing)
+                got_url[tid] = (landing, rec["final_brand"])
+            elif fld.get("reply_to"):
+                no_link.append((tid, str(fld["reply_to"])))
 
         # ไม่ใช่พนัน / ไม่มีลิงก์ / โดเมนจริงอยู่แล้ว -> บันทึกเลย
         if db.upsert_post(rec):
@@ -130,24 +239,33 @@ def run_keyword(term, log=print):
 
     # ---- resolve ลิงก์ทั้งหมดของคีย์เวิร์ดนี้ในรันเดียว ----
     if to_resolve:
-        log("[resolve] %d ลิงก์" % len(to_resolve))
-        resolved, rerr = apify.resolve(list(to_resolve.keys()))
-        if rerr:
-            log("  [resolve] error: %s (บันทึกแบบยังไม่รู้โดเมนจริง)" % rerr)
-            resolved = {}
+        resolved = _resolve_urls(list(to_resolve.keys()), log)
         for tid, (rec, landing) in pending.items():
-            r = resolved.get(landing) or {}
-            fu = r.get("finalUrl")
-            if fu and fu not in ("ดึงไม่สำเร็จ", "ระบบขัดข้อง"):
+            fu, brand = resolved.get(landing) or (None, None)
+            if fu:
                 rec["final_url"] = fu
-                rec["final_brand"] = r.get("brandName")
+                rec["final_brand"] = brand
+                got_url[tid] = (fu, brand)
             if db.upsert_post(rec):
                 added += 1
 
+    # สแปม iGaming ชอบวางลิงก์ไว้ทวีตแรกทวีตเดียว แล้วตอบต่อท้ายเป็นสายยาวโดยไม่ใส่ลิงก์อีก
+    # ทวีตลูกจึงไม่มีอะไรให้ตาม -> ยืมโดเมนจากทวีตแม่ถ้าแม่อยู่ในชุดเดียวกัน (ฟรี ไม่ยิงเพิ่ม)
+    if no_link:
+        n = 0
+        for tid, parent in no_link:
+            got = got_url.get(parent)
+            if got and db.set_final(tid, got[0], got[1]):
+                n += 1
+        if n:
+            log("[thread] ยืมโดเมนจากทวีตแม่ให้ %d โพสต์ที่ไม่มีลิงก์" % n)
+
     if new_kw:
-        got = db.add_keywords(sorted(new_kw), source="ai")
+        # เข้าคลังแบบ "ปิดไว้" — เจ้าของเป็นคนเลือกเปิดเองในหน้าคลังคีย์เวิร์ด
+        # (ถ้าเปิดอัตโนมัติ คลังจะบานจากหลักสิบเป็นหลักพันภายในไม่กี่รอบ = ค่า Apify บาน)
+        got = db.add_keywords(sorted(new_kw), source="ai", active=0)
         if got:
-            log("[keywords] +%d คำใหม่จาก AI" % got)
+            log("[keywords] +%d คำใหม่จาก AI (ปิดไว้ รอเลือกเปิดในคลัง)" % got)
 
     db.log_run(term, len(tweets), added, skipped)
     db.mark_keyword_run(term, added)

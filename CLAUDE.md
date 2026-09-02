@@ -36,13 +36,23 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
   ให้ตรงกับที่เคยใช้ใน n8n เพื่อผลสกัดเหมือนเดิม
 - **system prompt ห้ามแก้ตัวอักษร** (อยู่ใน `config.py` `SYSTEM_PROMPT`) — ยกจาก n8n เป๊ะ
   โพสต์ที่ไม่ใช่พนัน AI จะตอบ `brand_name = "ไม่ใช่เว็บพนัน"` (ค่าคงที่ `NOT_GAMBLING`) → เก็บแบบ flag ไม่ resolve
+- **`LLM_WORKERS`** (ค่าเริ่ม 8) — `pipeline._extract_many` ยิง OpenRouter ขนานด้วย ThreadPoolExecutor
+  เขียน DB ยังอยู่เธรดเดียวเหมือนเดิม · `extract.extract` retry 3 ครั้งเมื่อโดน 429/5xx (ถอย 2/4/6 วิ)
+  ถ้าเจอ 429 รัว ๆ ให้ลดเลขนี้ลง
+- **`follow.py` มาก่อน Apify เสมอ** — `pipeline._resolve_urls` ตามลิงก์ด้วย urllib ฟรีก่อน
+  เหลือเฉพาะที่ยังเป็น `REDIRECTORS` ค่อยส่ง Apify · t.co ไม่ตอบ 301 ต้องแกะจาก `<meta refresh>`
+  ในบอดี้ (อย่าเปลี่ยนไปใช้ HEAD อย่างเดียว มันคืน 200 เปล่า)
+- **คำจาก AI เข้าคลังแบบปิดไว้** (`add_keywords(..., active=0)`) — ถ้าเปิดอัตโนมัติ คลังจะบาน
+  จากหลักสิบเป็นหลักพันในไม่กี่รอบ = ค่า Apify บานตาม
 - **ค่าใช้จ่าย Apify**: ทั้ง scrape + resolve เสียเงินตาม usage — collector อย่าตั้งถี่ (`COLLECT_CYCLE`)
 - **ความลับ**: `.env` + `data/` อยู่ใน `.gitignore` แล้ว — อย่า commit token/proxy/DB ขึ้น git
 
 ## API ของ server (สำหรับต่อยอด UI)
 - `GET /api/posts` `{rows}` · `GET /api/keywords` `{rows}` · `GET /api/stats` · `GET /api/status`
 - `GET /api/run-status` สถานะ+log การดึงล่าสุด (หน้าเว็บ poll ทุก 2 วิ)
-- `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) · `POST /api/keyword` `{term[,active]}`
+- `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) · `POST /api/keyword` `{term[,active][,del]}`
+- `POST /api/keywords/bulk` `{terms:[], action:"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้ (ยืนยันครั้งเดียวต่อชุด)
+- `POST /api/resolve-pending` — กวาดโพสต์ที่ยังไม่รู้โดเมนจริง (ปุ่ม "ตามโดเมนที่ค้าง" / `run.py fix`)
 
 ## repo
 GitLab: https://gitlab.com/tardev-group/x-pulldata (branch หลัก: main)

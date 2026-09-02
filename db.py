@@ -10,6 +10,7 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 
 from config import DB_PATH
 
@@ -63,12 +64,53 @@ def init():
             added     INTEGER DEFAULT 0,   -- บันทึกใหม่จริง
             skipped   INTEGER DEFAULT 0,   -- ซ้ำ/ไม่ใช่พนัน
             note      TEXT )""")
+        # created_at เก็บเป็นสตริงแบบทวิตเตอร์ ("Tue Sep 01 16:57:30 +0000 2026") เรียงเป็น text ไม่ได้
+        # -> เก็บ epoch ไว้อีกคอลัมน์เพื่อเรียง "วันที่โพสต์ล่าสุด" ได้จริง
+        cols = {r["name"] for r in con.execute("PRAGMA table_info(posts)")}
+        if "created_ts" not in cols:
+            con.execute("ALTER TABLE posts ADD COLUMN created_ts INTEGER")
+        if "reply_to" not in cols:
+            con.execute("ALTER TABLE posts ADD COLUMN reply_to TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ing ON posts(ingested_at DESC)")
+        con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ts ON posts(created_ts DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_brand ON posts(final_brand)")
+        need_ts = con.execute("SELECT 1 FROM posts WHERE created_ts IS NULL LIMIT 1").fetchone()
+    if need_ts:
+        backfill_ts()          # แถวเก่าที่บันทึกก่อนมีคอลัมน์นี้ — เติมให้อัตโนมัติครั้งเดียว
 
 
 def _j(v):
     return json.dumps(v if v is not None else [], ensure_ascii=False)
+
+
+def to_ts(created_at):
+    """'Tue Sep 01 16:57:30 +0000 2026' (รูปแบบทวิตเตอร์) หรือ ISO -> epoch · แปลงไม่ได้คืน None"""
+    s = (created_at or "").strip()
+    if not s:
+        return None
+    for fmt in ("%a %b %d %H:%M:%S %z %Y", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S.%f%z",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(s.replace("Z", "+0000"), fmt)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return int(d.timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def backfill_ts():
+    """เติม created_ts ให้แถวที่บันทึกไว้ก่อนมีคอลัมน์นี้ — คืนจำนวนแถวที่เติม"""
+    with _lock, _con() as con:
+        rows = con.execute("SELECT tweet_id, created_at FROM posts WHERE created_ts IS NULL").fetchall()
+        n = 0
+        for r in rows:
+            ts = to_ts(r["created_at"])
+            if ts:
+                con.execute("UPDATE posts SET created_ts=? WHERE tweet_id=?", (ts, r["tweet_id"]))
+                n += 1
+    return n
 
 
 # ---------------------------------------------------------------- posts
@@ -84,8 +126,8 @@ def upsert_post(p):
         con.execute("""INSERT INTO posts(
             tweet_id,tweet_url,created_at,author,location,text,brand_name,final_brand,
             promotions,keywords,cta,url_landing,url_landing_2,final_url,line_id,
-            preview_img,video_url,is_gambling,search_term,ingested_at,raw)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            preview_img,video_url,is_gambling,search_term,ingested_at,raw,created_ts,reply_to)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(tweet_id) DO UPDATE SET
             final_brand=excluded.final_brand, final_url=excluded.final_url,
             brand_name=excluded.brand_name, promotions=excluded.promotions,
@@ -97,14 +139,33 @@ def upsert_post(p):
              _j(p.get("promotions")), _j(p.get("keywords")), p.get("cta"),
              p.get("url_landing"), p.get("url_landing_2"), p.get("final_url"), p.get("line_id"),
              p.get("preview_img"), p.get("video_url"), 1 if p.get("is_gambling", True) else 0,
-             p.get("search_term"), int(time.time()), _j(p.get("raw"))))
+             p.get("search_term"), int(time.time()), _j(p.get("raw")),
+             to_ts(p.get("created_at")), p.get("reply_to")))
     return new
+
+
+def pending_landing(limit=None):
+    """โพสต์พนันที่ยังไม่รู้โดเมนจริง แต่มีลิงก์ให้ตามต่อ (ปุ่ม 'ตามโดเมนที่ค้าง' ใช้)"""
+    q = ("SELECT tweet_id, url_landing FROM posts "
+         "WHERE is_gambling=1 AND (final_url IS NULL OR final_url='') "
+         "AND url_landing IS NOT NULL AND url_landing!='' ORDER BY ingested_at DESC")
+    if limit:
+        q += " LIMIT %d" % int(limit)
+    with _con() as con:
+        return [dict(r) for r in con.execute(q)]
+
+
+def set_final(tweet_id, final_url, final_brand):
+    with _lock, _con() as con:
+        return con.execute("UPDATE posts SET final_url=?, final_brand=? WHERE tweet_id=?",
+                           (final_url, final_brand, str(tweet_id))).rowcount
 
 
 def recent_posts(limit=3000):
     with _con() as con:
         rows = con.execute(
-            "SELECT * FROM posts ORDER BY ingested_at DESC LIMIT ?", (int(limit),)).fetchall()
+            "SELECT * FROM posts ORDER BY COALESCE(created_ts, ingested_at) DESC LIMIT ?",
+            (int(limit),)).fetchall()
     out = []
     for r in rows:
         d = dict(r)
@@ -119,8 +180,9 @@ def recent_posts(limit=3000):
 
 
 # ---------------------------------------------------------------- keywords
-def add_keywords(terms, source="ai"):
-    """เติมคีย์เวิร์ดใหม่ (ไม่ทับของเดิม) — คืนจำนวนที่เพิ่มจริง"""
+def add_keywords(terms, source="ai", active=1):
+    """เติมคีย์เวิร์ดใหม่ (ไม่ทับของเดิม) — คืนจำนวนที่เพิ่มจริง
+    active=0 ใช้กับคำที่ AI สกัดมา: เข้าคลังไว้ให้เลือกเปิดเอง ไม่ยิงสแครปอัตโนมัติ"""
     n = 0
     now = int(time.time())
     with _lock, _con() as con:
@@ -129,10 +191,24 @@ def add_keywords(terms, source="ai"):
             if not t or len(t) > 80:
                 continue
             cur = con.execute(
-                "INSERT OR IGNORE INTO keywords(term,source,active,added_at) VALUES(?,?,1,?)",
-                (t, source, now))
+                "INSERT OR IGNORE INTO keywords(term,source,active,added_at) VALUES(?,?,?,?)",
+                (t, source, 1 if active else 0, now))
             n += cur.rowcount
     return n
+
+
+def set_keywords_active(terms, active):
+    """เปิด/ปิดหลายคำรวดเดียว (หน้าคลังคีย์เวิร์ดใช้) — คืนจำนวนที่เปลี่ยนจริง"""
+    v = 1 if active else 0
+    with _lock, _con() as con:
+        return sum(con.execute("UPDATE keywords SET active=? WHERE term=? AND active!=?",
+                               (v, t, v)).rowcount for t in terms)
+
+
+def del_keywords(terms):
+    """ลบหลายคำรวดเดียว — โพสต์ที่เก็บไว้แล้วไม่แตะ"""
+    with _lock, _con() as con:
+        return sum(con.execute("DELETE FROM keywords WHERE term=?", (t,)).rowcount for t in terms)
 
 
 def active_keywords():
@@ -151,6 +227,12 @@ def set_keyword(term, active=None):
     with _lock, _con() as con:
         if active is not None:
             con.execute("UPDATE keywords SET active=? WHERE term=?", (1 if active else 0, term))
+
+
+def del_keyword(term):
+    """ลบคีย์เวิร์ดออกจากคลัง — โพสต์ที่เก็บไว้แล้วไม่แตะ (ยังดูย้อนหลังได้)"""
+    with _lock, _con() as con:
+        return con.execute("DELETE FROM keywords WHERE term=?", (term,)).rowcount
 
 
 def mark_keyword_run(term, hits_added):

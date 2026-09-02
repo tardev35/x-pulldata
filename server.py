@@ -10,6 +10,7 @@ server.py — เว็บเซิร์ฟเวอร์ x-pulldata (Python s
 """
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,13 @@ import pipeline
 from config import ENV, PORT
 
 HERE = Path(__file__).parent
+
+# คอนโซล Windows เป็น cp874 — คีย์เวิร์ดที่มีอักษรพิเศษ (เช่น 𝙥𝙜) จะทำ print ระเบิดกลางรัน
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 # สถานะการรันเบื้องหลัง (ปุ่ม "ดึงข้อมูล" บนหน้าเว็บ) — เก็บ log ล่าสุดไว้ให้ UI poll
 _run = {"busy": False, "started": 0, "term": "", "log": []}
@@ -46,6 +54,27 @@ def _run_bg(term):
                 pipeline.run_keyword(term, log=_log)
             else:
                 pipeline.run_all(log=_log)
+        except Exception as ex:
+            _log("[error] %s" % ex)
+        finally:
+            with _run_lock:
+                _run["busy"] = False
+            _log("— จบรอบ —")
+
+    threading.Thread(target=work, daemon=True).start()
+    return True
+
+
+def _pending_bg():
+    """ปุ่ม 'ตามโดเมนที่ค้าง' — ใช้ช่องสถานะเดียวกับปุ่มดึง จะได้เห็น log สดเหมือนกัน"""
+    with _run_lock:
+        if _run["busy"]:
+            return False
+        _run.update(busy=True, started=int(time.time()), term="(ตามโดเมนที่ค้าง)", log=[])
+
+    def work():
+        try:
+            pipeline.resolve_pending(log=_log)
         except Exception as ex:
             _log("[error] %s" % ex)
         finally:
@@ -125,11 +154,27 @@ class Handler(BaseHTTPRequestHandler):
             if not term:
                 self._json({"error": "ไม่มี term"}, 400)
                 return
+            if payload.get("del"):
+                n = db.del_keyword(term)
+                self._json({"ok": True, "deleted": n})
+                return
             if "active" in payload:
                 db.set_keyword(term, bool(payload["active"]))
             else:
                 db.add_keywords([term], source="seed")
             self._json({"ok": True})
+        elif self.path == "/api/resolve-pending":
+            ok = _pending_bg()
+            self._json({"ok": ok, "busy": not ok})
+        elif self.path == "/api/keywords/bulk":
+            # หน้าคลังคีย์เวิร์ดสั่งทีละหลายคำ (เปิด/ปิด/ลบ) — ยิงทีเดียวไม่ต้องวน 200 request
+            terms = [t for t in (payload.get("terms") or []) if t]
+            act = payload.get("action")
+            if not terms or act not in ("on", "off", "del"):
+                self._json({"error": "ต้องมี terms และ action = on/off/del"}, 400)
+                return
+            n = db.del_keywords(terms) if act == "del" else db.set_keywords_active(terms, act == "on")
+            self._json({"ok": True, "n": n, "action": act})
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found")
 

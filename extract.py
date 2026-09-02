@@ -8,6 +8,7 @@ user content สร้างในรูปแบบเดียวกับท�
 
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -43,13 +44,22 @@ def extract(f):
         "HTTP-Referer": "http://localhost:%d" % PORT,
         "X-Title": "x-pulldata",
     })
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            out = json.loads(r.read().decode("utf-8", "ignore"))
-    except urllib.error.HTTPError as ex:
-        return {"_error": "OpenRouter %s: %s" % (ex.code, ex.read()[:180].decode("utf-8", "ignore"))}
-    except Exception as ex:
-        return {"_error": "เรียก OpenRouter ไม่ได้: %s" % ex}
+    # ยิงขนานหลายเธรดมีโอกาสโดน 429/5xx — ถอยแล้วลองใหม่ ไม่งั้นโพสต์นั้นหายไปเลย
+    last = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                out = json.loads(r.read().decode("utf-8", "ignore"))
+            break
+        except urllib.error.HTTPError as ex:
+            last = "OpenRouter %s: %s" % (ex.code, ex.read()[:180].decode("utf-8", "ignore"))
+            if ex.code not in (429, 500, 502, 503, 504):
+                return {"_error": last}
+        except Exception as ex:
+            last = "เรียก OpenRouter ไม่ได้: %s" % ex
+        time.sleep(2 * (attempt + 1))
+    else:
+        return {"_error": last}
     txt = out.get("choices", [{}])[0].get("message", {}).get("content", "")
     m = re.search(r"\{.*\}", txt, re.S)          # กันโมเดลห่อด้วย ```json แม้สั่งห้ามแล้ว
     if not m:

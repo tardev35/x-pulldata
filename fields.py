@@ -124,5 +124,8 @@ def extract_fields(item):
                            "author.entities.description.urls.0.expanded_url"),
         # URL แคปชั่น (ลิงก์ในตัวโพสต์ มักเป็น t.co)
         "cap_url":   first(item, "entities.urls.0.expanded_url", "entities.urls.0.url"),
+        # ทวีตแม่ (ถ้าโพสต์นี้เป็นการตอบกลับ) — สแปม iGaming ชอบวางลิงก์ไว้ทวีตแรกทวีตเดียว
+        # แล้วตอบต่อท้ายเป็นสายยาวโดยไม่ใส่ลิงก์อีก ตัวลูกจึงไม่มีอะไรให้ตามเลย
+        "reply_to":  first(item, "inReplyToId", "inReplyToStatusId", "in_reply_to_status_id_str"),
         "line_id":   line_id(full_text),
     }
