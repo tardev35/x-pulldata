@@ -12,6 +12,7 @@ pipeline.py — ท่อหลัก: สแครป -> สกัด (AI) -> �
 """
 
 import re
+import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
@@ -103,6 +104,10 @@ def _norm_kw(term):
     return term if 1 < len(term) <= 80 else None
 
 
+# หลายคีย์เวิร์ดทำพร้อมกัน แต่ละตัวมีพูลของตัวเอง -> ต้องมีเพดานรวม ไม่งั้น OpenRouter ตอบ 429 รัว
+_LLM_GATE = threading.Semaphore(max(1, int(ENV.get("llm_workers") or 8)))
+
+
 def _extract_many(flds, log=print):
     """ยิง LLM ทีละโพสต์คือคอขวด (รอ network ไม่ใช่ CPU) — เธรดพูลเลยช่วยได้ตรง ๆ
     คืนผลเรียงลำดับเดิมเสมอ เพื่อ zip กลับเข้าคู่กับทวีตได้"""
@@ -120,10 +125,11 @@ def _extract_many(flds, log=print):
 
 
 def _safe_extract(f):
-    try:
-        return extract.extract(f)
-    except Exception as ex:
-        return {"_error": "extract ล้ม: %s" % ex}
+    with _LLM_GATE:
+        try:
+            return extract.extract(f)
+        except Exception as ex:
+            return {"_error": "extract ล้ม: %s" % ex}
 
 
 def _resolve_urls(urls, log=print, paid=True):
@@ -417,25 +423,40 @@ def run_keyword(term, log=print):
     return {"term": term, "scraped": len(tweets), "added": added, "skipped": skipped}
 
 
+def _run_many(terms, log=print):
+    """ทำหลายคีย์เวิร์ดพร้อมกัน — เวลาส่วนใหญ่คือ "รอ Apify สแครป" ไม่ใช่งานของเครื่องเรา
+    ทำทีละคำจึงเสียเวลาเปล่า · เขียน DB ยังผ่าน lock เดิม + WAL ไม่ชนกัน"""
+    terms = [t for t in dict.fromkeys(terms) if t]
+    if not terms:
+        return []
+    n = max(1, int(ENV.get("scrape_workers") or 1))
+
+    def one(term):
+        # หลายคำพิมพ์ log ปนกัน ต้องมีชื่อคำนำหน้าไม่งั้นอ่านไม่รู้เรื่อง
+        tag = lambda m: log("«%s» %s" % (term, m))
+        try:
+            return run_keyword(term, log=tag if n > 1 else log)
+        except Exception as ex:
+            log("[error] %s: %s" % (term, ex))
+            return {"term": term, "error": str(ex)}
+
+    if n == 1:
+        return [one(t) for t in terms]
+    log("[run] %d คีย์เวิร์ด · ทำพร้อมกัน %d คำ" % (len(terms), n))
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=n) as pool:
+        out = list(pool.map(one, terms))
+    log("[run] จบทั้งชุดใน %.1f นาที (%d คำ)" % ((time.time() - t0) / 60, len(terms)))
+    return out
+
+
 def run_terms(terms, log=print):
     """ดึงเฉพาะคำที่ระบุมา (ปุ่ม ▶ ข้างคำ / ปุ่ม 'ดึงคำที่เลือก' ในคลัง)"""
-    out = []
-    for t in [x for x in dict.fromkeys(terms) if x]:
-        try:
-            out.append(run_keyword(t, log=log))
-        except Exception as ex:
-            log("[error] %s: %s" % (t, ex))
-    return out
+    return _run_many(terms, log=log)
 
 
 def run_all(limit=None, log=print):
     kws = db.active_keywords()
     if limit:
         kws = kws[:int(limit)]        # collector หมุนทีละชุด ไม่ยิงทุกคำรวดเดียว
-    out = []
-    for k in kws:
-        try:
-            out.append(run_keyword(k["term"], log=log))
-        except Exception as ex:
-            log("[error] %s: %s" % (k["term"], ex))
-    return out
+    return _run_many([k["term"] for k in kws], log=log)
