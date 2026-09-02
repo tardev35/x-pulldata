@@ -45,6 +45,14 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - **อ่านหน้า bio-link ต้องใช้ header ชุดเต็ม** — `follow.UA` มี `Sec-Fetch-*`/`Accept-Language` ครบ
   เพราะ heylink ตอบ 403 ทันทีถ้าส่งแค่ User-Agent · โดน 429 จะหมุน `PROXY_URL` ให้เอง
   · `page()` อ่านถึง 1.5MB เพราะ hopp.bio (Wix) ฝังลิงก์จริงไว้ลึกเกิน 400KB
+- **หน้าคั่นนับถอยหลัง ไม่ต้องรอ** — bit.ly ที่โดนตั้งธงจะขึ้นหน้า "redirect in 6 seconds"
+  แต่ปลายทางอยู่ใน JSON ของหน้าแล้ว (`"Location"`/`"LongURL"`) · `follow.one` อ่าน 64KB
+  เพราะค่านั้นอยู่กลางไฟล์ ไม่ใช่หัวไฟล์
+- **SSL ของเว็บย่อลิงก์พัง** — bit.ly ส่งเชนใบรับรองไม่ครบ Python บน Windows verify ไม่ผ่าน
+  `follow._get` จึงลอง verify ก่อน (เติม root ของ Windows ให้แล้ว) แล้วค่อยถอยเป็นไม่ verify
+  ยอมได้เพราะแค่อ่าน URL ปลายทางของโฆษณาสาธารณะ ไม่ได้ส่งข้อมูลเข้าไป
+- **AI คืน url_landing เป็นโดเมนเปล่า** (ไม่มี `https://`) — `pipeline._norm_url` เติม scheme ให้
+  ไม่งั้น urlparse อ่านโฮสต์ไม่ออก และ Apify ตีกลับ 400 invalid-input
 - **`target_url`/`target_brand` ไม่ทับ `final_url`** — `final_url` = หน้า bio-link ที่โฆษณาใช้จริง
   ส่วน target = โดเมนแบรนด์หลังทะลุ · UI โชว์ target ก่อนเสมอ (`brandOf`/`landingOf` ใน index.html)
 - **คำจาก AI เข้าคลังแบบปิดไว้** (`add_keywords(..., active=0)`) — ถ้าเปิดอัตโนมัติ คลังจะบาน

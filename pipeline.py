@@ -60,6 +60,20 @@ def _is_short(url):
     return _in(url, SHORTENERS)
 
 
+def _norm_url(u):
+    """AI บางทีคืนโดเมนเปล่า ๆ ("play.class289th4.com") ไม่มี scheme — เติมให้ก่อนใช้งาน
+    ไม่งั้น urlparse อ่านโฮสต์ไม่ออก และ Apify ก็ตีกลับเป็น 400 invalid-input"""
+    u = str(u or "").strip()
+    if not u or " " in u:
+        return None
+    if u.startswith("//"):
+        return "https:" + u
+    if not u.startswith("http"):
+        head = u.split("/")[0]
+        return "https://" + u if "." in head and len(head) > 3 else None
+    return u
+
+
 def _needs_resolve(url):
     if ENV.get("resolve_all") == "1":
         return True
@@ -74,7 +88,7 @@ def _best_landing(fld, ai):
     แล้วค่อยไล่หาอันที่ไม่ใช่ลิงก์สั้น ก่อนจะยอมใช้ลิงก์สั้นเป็นทางเลือกสุดท้าย"""
     cands = [fld.get("cap_url"), ai.get("url_landing"), ai.get("url_landing_2"),
              fld.get("ref_url"), fld.get("ref_url2")]
-    cands = [str(v) for v in cands if v and str(v).startswith("http")]
+    cands = [u for u in (_norm_url(v) for v in cands) if u]
     for v in cands:                       # โดเมนจริง = จบเลย ไม่ต้องตามต่อ
         if not _is_short(v):
             return v
@@ -115,29 +129,34 @@ def _safe_extract(f):
 def _resolve_urls(urls, log=print):
     """ตามลิงก์ให้ถึงโดเมนจริง — urllib ก่อน (ฟรี เร็วกว่าหลายสิบเท่า) เหลือเท่าไรค่อยจ่ายให้ Apify
     คืน {url เดิม: (final_url, brand)}"""
-    urls = [u for u in dict.fromkeys(urls) if u]
+    # เก็บคู่ (ค่าที่บันทึกไว้ -> URL ที่ยิงได้จริง) เพราะบางแถวเป็นโดเมนเปล่าไม่มี scheme
+    norm = {}
+    for u in dict.fromkeys(urls):
+        n = _norm_url(u)
+        if n:
+            norm[u] = n
     out = {}
-    if not urls:
+    if not norm:
         return out
     t0 = time.time()
-    got = follow.many(urls, workers=int(ENV.get("llm_workers") or 8))
+    got = follow.many(list(dict.fromkeys(norm.values())), workers=int(ENV.get("llm_workers") or 8))
     left = []
-    for u in urls:
-        fu = (got.get(u) or (None, None))[0]
+    for u, n in norm.items():
+        fu = (got.get(n) or (None, None))[0]
         # ตามจนพ้นตัวเปลี่ยนทางแล้ว = ใช้ได้เลย (หน้า bio-link ถือเป็น landing จริงของโฆษณา)
         if fu and not _in(fu, REDIRECTORS):
             out[u] = (fu, _brand_of(fu))
         else:
             left.append(u)
-    log("[resolve] urllib ตามได้ %d/%d ลิงก์ ใน %.1f วิ (ฟรี)" % (len(out), len(urls), time.time() - t0))
+    log("[resolve] urllib ตามได้ %d/%d ลิงก์ ใน %.1f วิ (ฟรี)" % (len(out), len(norm), time.time() - t0))
     if left:
         log("[resolve] ส่งต่อ Apify อีก %d ลิงก์ (มีค่าใช้จ่าย)" % len(left))
-        res, err = apify.resolve(left)
+        res, err = apify.resolve([norm[u] for u in left])
         if err:
             log("  [resolve] Apify error: %s" % err)
             res = {}
         for u in left:
-            r = res.get(u) or {}
+            r = res.get(norm[u]) or {}
             fu = r.get("finalUrl")
             if fu and fu not in ("ดึงไม่สำเร็จ", "ระบบขัดข้อง"):
                 out[u] = (fu, r.get("brandName"))

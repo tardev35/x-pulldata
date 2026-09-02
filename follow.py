@@ -2,13 +2,17 @@
 """
 follow.py — ตามลิงก์สั้นด้วย urllib ล้วน (ฟรี ไม่เสีย Apify)
 
-t.co ไม่ตอบ 301 แต่ตอบหน้า HTML สั้น ๆ ที่ฝังปลายทางไว้ใน <meta refresh> + location.replace()
-เลยต้องอ่าน body 4KB แรกแล้วแกะเอา · ส่วน bit.ly/shorturl.asia ตอบ 301 ปกติ urllib ตามให้เอง
-ที่ตามต่อไม่ได้จริง ๆ (หน้า bio-link ที่ต้องคลิก เช่น heylink) ถือว่าจบแค่นั้น
+3 แบบที่ต้องรับมือ (ทั้งหมดอ่านเองได้ ไม่ต้องรันเบราว์เซอร์ ไม่ต้องรอเวลานับถอยหลัง):
+  1. 301/302 ปกติ (shorturl.asia, bit.ly ทั่วไป) — urllib ตามให้เอง
+  2. หน้า HTML สั้น ๆ ที่ฝังปลายทางใน <meta refresh> / location.replace() — t.co ใช้แบบนี้
+  3. หน้า "คั่น" นับถอยหลัง 6-8 วิ (bit.ly ที่โดนตั้งธงว่าน่าสงสัย) — ปลายทางอยู่ใน JSON
+     ของหน้า (`"Location"` / `"LongURL"`) อ่านตรง ๆ ได้เลย ไม่ต้องรอ
+หน้า bio-link ที่ต้องคลิกเอง (heylink/linktr.ee) ใช้ targets() อ่านปุ่มทั้งหน้าแทน
 """
 
 import html
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,25 +41,55 @@ NOISE = (
 )
 
 
-def _openers():
+def _ctx(verify=True):
+    """ตัวตรวจใบรับรอง: ปกติตรวจตามปกติ (+ เติม root ของ Windows ให้ด้วย)
+
+    เว็บย่อลิงก์บางเจ้า (bit.ly ที่ขึ้นหน้าเตือน) ส่งเชนใบรับรองไม่ครบ ทำให้ verify ล้ม
+    เราแค่อ่าน URL ปลายทางของโฆษณาสาธารณะ ไม่ได้ส่งข้อมูลอะไรเข้าไป จึงยอมข้ามการตรวจ
+    เป็นทางเลือกสุดท้ายได้ ดีกว่าปล่อยให้โพสต์นั้นค้างไม่รู้โดเมนตลอดไป"""
+    if not verify:
+        c = ssl.create_default_context()
+        c.check_hostname = False
+        c.verify_mode = ssl.CERT_NONE
+        return c
+    c = ssl.create_default_context()
+    if hasattr(ssl, "enum_certificates"):          # Windows: ดึง root จาก cert store ของระบบ
+        for cert, _enc, _trust in ssl.enum_certificates("ROOT"):
+            try:
+                c.load_verify_locations(cadata=cert)
+            except Exception:
+                pass
+    return c
+
+
+CTX, CTX_OFF = _ctx(True), _ctx(False)
+
+
+def _openers(verify=True):
     """ลองยิงตรงก่อน แล้วค่อยหมุน proxy ที่ตั้งไว้ (bio-link ชอบบล็อก IP ที่ยิงถี่)"""
     from config import ENV
-    out = [urllib.request.build_opener()]
+    ctx = CTX if verify else CTX_OFF
+    out = [urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx))]
     for px in [u.strip() for u in (ENV.get("proxy_url") or "").split(",") if u.strip()]:
         out.append(urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": px, "https": px})))
+            urllib.request.ProxyHandler({"http": px, "https": px}),
+            urllib.request.HTTPSHandler(context=ctx)))
     return out
 
 
 def page(url, timeout=25, max_bytes=1500000):
     """โหลด HTML ของหน้า -> (html, ทางที่ใช้) · โดน 403/429 จะหมุน proxy ให้เอง"""
     err = "?"
-    for i, op in enumerate(_openers()):
-        try:
-            r = op.open(urllib.request.Request(url, headers=UA), timeout=timeout)
-            return r.read(max_bytes).decode("utf-8", "ignore"), ("ตรง" if i == 0 else "proxy#%d" % i)
-        except Exception as ex:
-            err = str(ex)[:80]
+    for verify in (True, False):
+        for i, op in enumerate(_openers(verify)):
+            try:
+                r = op.open(urllib.request.Request(url, headers=UA), timeout=timeout)
+                via = "ตรง" if i == 0 else "proxy#%d" % i
+                return r.read(max_bytes).decode("utf-8", "ignore"), via + ("" if verify else "/no-tls")
+            except Exception as ex:
+                err = str(ex)[:80]
+        if "SSL" not in err and "CERTIFICATE" not in err:
+            break            # ไม่ใช่ปัญหาใบรับรอง ลองแบบไม่ verify ไปก็เท่านั้น
     return None, err
 
 
@@ -108,29 +142,52 @@ def _host(u):
 _META = re.compile(rb"""<meta[^>]+http-equiv=["']?refresh["']?[^>]*content=["'][^"']*?url=([^"'>\s]+)""",
                    re.I)
 _JSLOC = re.compile(rb"""location\.replace\(\s*["']([^"']+)["']""", re.I)
+# หน้า "คั่น" ที่นับถอยหลังก่อนพาไป (bit.ly เวลาโดนตั้งธงว่าน่าสงสัย) — ปลายทางฝังอยู่ใน JSON
+# ของหน้าอยู่แล้ว ไม่ต้องรอครบ 6-8 วิ อ่านเอาตรง ๆ ได้เลย
+_INTER = re.compile(rb"""["'](?:Location|long_?url|LongURL|destination)["']\s*[:=]\s*["']([^"']+)["']""",
+                    re.I)
 
 
 def _next_hop(body):
-    """แกะปลายทางจาก meta refresh / location.replace ในหน้าเปลี่ยนทาง"""
-    for rx in (_META, _JSLOC):
+    """แกะปลายทางจาก meta refresh / location.replace / JSON ของหน้าคั่น"""
+    for rx in (_META, _JSLOC, _INTER):
         m = rx.search(body or b"")
         if m:
-            u = m.group(1).decode("utf-8", "ignore").replace(chr(92) + "/", "/").strip()
+            u = m.group(1).decode("utf-8", "ignore").strip()
+            u = u.replace(chr(92) + "/", "/").replace(chr(92) + "u0026", "&")
+            if u.startswith("//"):
+                u = "https:" + u
+            elif not u.startswith("http") and "." in u.split("/")[0]:
+                u = "https://" + u          # bit.ly เก็บ LongURL แบบไม่มี scheme
             if u.startswith("http"):
                 return u
     return None
 
 
-def one(url, max_hops=5, timeout=10, read_bytes=4096):
-    """คืน (final_url, error) — เดินตามให้สุดเท่าที่ทำได้โดยไม่ต้องรันเบราว์เซอร์"""
+def _get(url, timeout, read_bytes):
+    """ยิง GET หนึ่งครั้ง — verify ใบรับรองก่อน ถ้าเชนเสียค่อยลองแบบไม่ verify"""
+    req = urllib.request.Request(url, headers=UA, method="GET")
+    try:
+        with _openers(True)[0].open(req, timeout=timeout) as r:
+            return r.geturl(), r.read(read_bytes)
+    except ssl.SSLError:
+        pass
+    except urllib.error.URLError as ex:
+        if not isinstance(getattr(ex, "reason", None), ssl.SSLError):
+            raise
+    with _openers(False)[0].open(req, timeout=timeout) as r:
+        return r.geturl(), r.read(read_bytes)
+
+
+def one(url, max_hops=5, timeout=10, read_bytes=65536):
+    """คืน (final_url, error) — เดินตามให้สุดเท่าที่ทำได้โดยไม่ต้องรันเบราว์เซอร์
+
+    อ่าน 64KB เพราะหน้าคั่นแบบนับถอยหลัง (bit.ly) ซ่อนปลายทางไว้กลางไฟล์ ไม่ใช่หัวไฟล์"""
     cur, err = url, None
     for _ in range(max_hops):
         body = b""
         try:
-            req = urllib.request.Request(cur, headers=UA, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                landed = r.geturl()              # urllib ตาม 301/302 ให้แล้ว
-                body = r.read(read_bytes)
+            landed, body = _get(cur, timeout, read_bytes)
         except urllib.error.HTTPError as ex:
             landed = ex.geturl() or cur
             err = "HTTP %s" % ex.code            # 403/404 ก็ยังได้ URL ที่ถูกต้องมาแล้ว
