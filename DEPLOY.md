@@ -79,6 +79,9 @@ After=network-online.target
 Type=simple
 User=xpull
 WorkingDirectory=/opt/x-pulldata
+# เครื่องเป็น UTC และมีเว็บอื่น 321 ไซต์ใช้อยู่ จึงตั้งเวลาไทยเฉพาะโปรเซสนี้
+# (SQLite localtime + วันที่บนหน้าเว็บ + ตัวเคลียร์ 3 วัน ยึดค่านี้)
+Environment=TZ=Asia/Bangkok
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONIOENCODING=utf-8
 ExecStart=/usr/bin/python3 /opt/x-pulldata/server.py
