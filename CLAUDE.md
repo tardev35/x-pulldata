@@ -45,6 +45,10 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - **อ่านหน้า bio-link ต้องใช้ header ชุดเต็ม** — `follow.UA` มี `Sec-Fetch-*`/`Accept-Language` ครบ
   เพราะ heylink ตอบ 403 ทันทีถ้าส่งแค่ User-Agent · โดน 429 จะหมุน `PROXY_URL` ให้เอง
   · `page()` อ่านถึง 1.5MB เพราะ hopp.bio (Wix) ฝังลิงก์จริงไว้ลึกเกิน 400KB
+- **bio-link ที่มี Cloudflare (heylink)** — urllib ผ่านไม่ได้แน่นอน (`Cf-Mitigated: challenge`)
+  ต้องใช้ `apify.page_links()` เปิดด้วยเบราว์เซอร์จริง + **residential proxy เท่านั้น**
+  (datacenter/webshare โดนตีตกตั้งแต่ชั้นแรก) · pageFunction ต้อง **รอจน `<a href>` โผล่**
+  ไม่ใช่รอเวลาคงที่ ไม่งั้นได้หน้า "Just a moment..." ที่ไม่มีลิงก์เลยกลับมา
 - **หน้าคั่นนับถอยหลัง ไม่ต้องรอ** — bit.ly ที่โดนตั้งธงจะขึ้นหน้า "redirect in 6 seconds"
   แต่ปลายทางอยู่ใน JSON ของหน้าแล้ว (`"Location"`/`"LongURL"`) · `follow.one` อ่าน 64KB
   เพราะค่านั้นอยู่กลางไฟล์ ไม่ใช่หัวไฟล์

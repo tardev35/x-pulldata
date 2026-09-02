@@ -53,6 +53,53 @@ def scrape(term, max_items=None):
     return _run_sync(ENV["scraper_actor"], payload, timeout=300)
 
 
+# ------------------------------------------------------- 3) อ่านลิงก์ในหน้าด้วยเบราว์เซอร์จริง
+# ใช้เมื่อ urllib อ่านหน้าไม่ได้ (heylink อยู่หลัง Cloudflare challenge — ต้องรัน JS ถึงจะผ่าน)
+_LINKS_FN = r"""async ({ page, request }) => {
+  try {
+    await page.waitForLoadState('domcontentloaded').catch(() => {});
+    // Cloudflare ขึ้นหน้า "Just a moment..." ก่อน (ไม่มี <a> เลย) เบราว์เซอร์จริงจะผ่านเองใน ~5 วิ
+    // จึงต้องรอจน <a> โผล่ ไม่ใช่รอเวลาคงที่ ไม่งั้นได้หน้าเปล่ากลับมา
+    try { await page.waitForSelector('a[href]', { timeout: 25000 }); } catch (e) {}
+    await page.waitForTimeout(1500);
+    const links = await page.$$eval('a[href]', els => els.slice(0, 120).map(a => ({
+      href: a.href, text: (a.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 60)
+    })));
+    return { requestUrl: request.url, title: await page.title().catch(() => ''), links };
+  } catch (e) {
+    return { requestUrl: request.url, links: [], error: String(e).slice(0, 150) };
+  }
+}"""
+
+
+def page_links(urls, timeout=300):
+    """เปิดหน้าเว็บด้วยเบราว์เซอร์จริงแล้วคืนลิงก์ทั้งหมดในหน้า -> {url: [(href, text), ...]}"""
+    urls = [u for u in dict.fromkeys(urls) if u]
+    if not urls:
+        return {}, None
+    payload = {
+        "startUrls": [{"url": u} for u in urls],
+        "ignoreSslErrors": True,
+        # ต้อง residential เท่านั้น — Cloudflare ตีตก datacenter/webshare ตั้งแต่ชั้นแรก
+        # (คิดตาม GB ที่ใช้ ดูใน .env ว่าตั้ง PROXY_URL ไว้ก็ไม่ช่วยชั้นนี้)
+        "proxyConfiguration": {"useApifyProxy": True, "apifyProxyGroups": ["RESIDENTIAL"]},
+        "pageFunction": _LINKS_FN,
+        "pageLoadTimeoutSecs": 60,
+        "navigationTimeoutSecs": 60,
+        "maxRequestRetries": 1,
+        "maxConcurrency": 3,
+    }
+    items, err = _run_sync(ENV["resolver_actor"], payload, timeout=timeout)
+    if err:
+        return {}, err
+    out = {}
+    for it in items:
+        if isinstance(it, dict) and it.get("requestUrl"):
+            out[it["requestUrl"]] = [(l.get("href"), l.get("text"))
+                                     for l in (it.get("links") or []) if isinstance(l, dict)]
+    return out, None
+
+
 # ---------------------------------------------------------------- 2) resolve
 # pageFunction ยกจาก n8n เดิม แต่เพิ่มการคืน request.url เพื่อให้ resolve หลายลิงก์ในรันเดียวได้
 # (แล้วค่อย map ผลกลับเข้าโพสต์ด้วย requestUrl) — ประหยัดกว่ายิง actor ทีละลิงก์มาก

@@ -324,8 +324,7 @@ tbody tr.new td{animation:flash 2.2s ease-out}
       <div class="search"><i>⌕</i><input type="text" id="q" placeholder="ค้นในแคปชั่น / แบรนด์ / โดเมน…"></div>
       <span class="live off" id="live"><i></i><span id="livetxt">—</span></span>
       <button class="btn" id="refresh">รีเฟรช</button>
-      <div class="who"><div class="avatar">iG</div>
-        <div><b>iGaming Listening</b><span id="whomodel">—</span></div></div>
+      
     </div>
 
     <div class="content">
@@ -811,7 +810,8 @@ function loadSide(){
   fetch("/api/status").then(function(r){return r.json();}).then(function(s){
     STATUS=s;
     document.getElementById("hostinfo").textContent=(s.collector?"auto collect":"manual")+" · :"+s.port;
-    document.getElementById("whomodel").textContent=s.model||"—";
+    var wm=document.getElementById("whomodel");        // บล็อกผู้ใช้บนแถบบนถอดออกได้ ไม่ต้องพัง
+    if(wm)wm.textContent=s.model||"—";
   });
 }
 function pollRun(){

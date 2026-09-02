@@ -205,7 +205,7 @@ def _pick_target(cands, resolved):
     return best[1] if best else None
 
 
-def resolve_bio(limit=None, log=print):
+def resolve_bio(limit=None, log=print, use_apify=True):
     """ทะลุหน้า bio-link (heylink/linktr.ee/hopp.bio) ไปหาโดเมนแบรนด์จริง
 
     หน้าพวกนี้เป็น "ป้ายรวมลิงก์" ไม่ใช่ตัวแบรนด์ — ชื่อ heylink/hopp เลยไม่มีความหมายในรายงาน
@@ -218,27 +218,54 @@ def resolve_bio(limit=None, log=print):
     log("[bio] ตามต่อจากหน้า bio-link %d หน้า (%d โพสต์)"
         % (len(urls), sum(len(pages[u]) for u in urls)))
 
-    fixed = miss = 0
-    for u in urls:
+    fixed = 0
+    blocked = []                      # หน้าที่ urllib อ่านไม่ได้ (Cloudflare challenge ฯลฯ)
+    for i, u in enumerate(urls):
         cands, via = follow.targets(u)
         if not cands:
-            log("  [bio] %s -> อ่านไม่เจอปุ่ม (%s)" % (_host(u), via))
-            miss += 1
+            log("  [bio] %s -> urllib อ่านไม่ได้ (%s)" % (_host(u), via))
+            blocked.append(u)
             continue
         # ปุ่มหลายอันยังเป็นลิงก์สั้นอีกชั้น -> ตามให้สุดก่อนค่อยเลือก
+        # ใช้ _resolve_urls เพราะลิงก์สั้นบางเจ้า (shorturl.asia) ก็อยู่หลัง Cloudflare เหมือนกัน
+        # urllib จะโดน 403 แล้วตกไปให้เบราว์เซอร์ของ Apify ทำต่อเอง
         short = [h for h, _ in cands if _in(h, REDIRECTORS)]
-        resolved = {k: v[0] for k, v in follow.many(short).items() if v[0]} if short else {}
-        target = _pick_target(cands, resolved)
-        if not target:
-            log("  [bio] %s -> มีแต่ลิงก์โซเชียล ข้าม" % _host(u))
-            miss += 1
-            continue
-        brand = _brand_of(target)
-        n = db.set_target(pages[u], target, brand)
-        fixed += n
-        log("  [bio] %s -> %s (%d โพสต์) via %s" % (_host(u), brand, n, via))
-    log("[bio] ได้ปลายทาง %d โพสต์ · อ่านไม่ได้ %d หน้า" % (fixed, miss))
+        resolved = {k: v[0] for k, v in _resolve_urls(short, log).items()} if short else {}
+        fixed += _save_target(u, cands, resolved, pages, via, log)
+        if i < len(urls) - 1:
+            time.sleep(1.2)           # อย่ายิงรัว เดี๋ยวโดน Cloudflare ตั้งด่านเอา
+
+    # หน้าที่โดนด่านกันบอท ต้องใช้เบราว์เซอร์จริง (Apify) — ยิงรวดเดียวทั้งชุดให้คุ้มค่ารัน
+    if blocked and use_apify:
+        log("[bio] เหลือ %d หน้าที่ต้องเปิดด้วยเบราว์เซอร์จริง (Apify มีค่าใช้จ่าย)" % len(blocked))
+        got, err = apify.page_links(blocked)
+        if err:
+            log("  [bio] Apify error: %s" % err)
+        for u in blocked:
+            cands = follow.external(u, got.get(u) or [])
+            if not cands:
+                log("  [bio] %s -> เบราว์เซอร์ก็อ่านไม่ได้ ข้าม" % _host(u))
+                continue
+            short = [h for h, _ in cands if _in(h, REDIRECTORS)]
+            resolved = {k: v[0] for k, v in _resolve_urls(short, log).items()} if short else {}
+            fixed += _save_target(u, cands, resolved, pages, "apify", log)
+    elif blocked:
+        log("[bio] เหลือ %d หน้าที่โดนด่านกันบอท (ข้ามไว้ก่อน)" % len(blocked))
+
+    log("[bio] ได้ปลายทางรวม %d โพสต์" % fixed)
     return {"pages": len(urls), "fixed": fixed}
+
+
+def _save_target(u, cands, resolved, pages, via, log):
+    """เลือกปลายทางจากปุ่มที่อ่านมาได้ แล้วบันทึกให้ทุกโพสต์ที่ใช้หน้า bio นี้"""
+    target = _pick_target(cands, resolved)
+    if not target:
+        log("  [bio] %s -> มีแต่ลิงก์โซเชียล ข้าม" % _host(u))
+        return 0
+    brand = _brand_of(target)
+    n = db.set_target(pages[u], target, brand)
+    log("  [bio] %s -> %s (%d โพสต์) via %s" % (_host(u), brand, n, via))
+    return n
 
 
 def run_keyword(term, log=print):

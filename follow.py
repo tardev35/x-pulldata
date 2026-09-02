@@ -93,6 +93,32 @@ def page(url, timeout=25, max_bytes=1500000):
     return None, err
 
 
+def keep_fn(url, own_host=None):
+    """คืนฟังก์ชันคัดลิงก์ "ที่เป็นปลายทางจริง" ของหน้านั้น (ตัดลิงก์ในบ้านตัวเอง/โครงสร้าง/โซเชียล)"""
+    own = own_host or _host(url)
+    ownbase = own.split(".")[0]
+
+    def keep(u):
+        h = _host(u)
+        if not h or h == own or own in h:
+            return False
+        if h.split(".")[0] == ownbase:      # hopp.bio -> hopp.co ก็ของเจ้าเดิม
+            return False
+        return not any(s in h for s in NOISE)
+    return keep
+
+
+def external(url, pairs):
+    """กรอง [(href, ข้อความปุ่ม), ...] ที่ได้จากที่อื่น (เช่นเบราว์เซอร์ Apify) ด้วยกติกาเดียวกัน"""
+    keep = keep_fn(url)
+    out, seen = [], set()
+    for href, txt in pairs:
+        if href and keep(href) and href not in seen:
+            seen.add(href)
+            out.append((href, (txt or "").strip()[:60]))
+    return out
+
+
 _A = re.compile(r"""<a\s[^>]*href=["'](https?://[^"']+)["'][^>]*>(.*?)</a>""", re.S | re.I)
 _ANYURL = re.compile(r"""https?://[^\s"'<>\)]+""")
 
@@ -105,18 +131,7 @@ def targets(url, own_host=None):
     body, via = page(url)
     if not body:
         return [], via
-    own = own_host or _host(url)
-
-    ownbase = own.split(".")[0]
-
-    def keep(u):
-        h = _host(u)
-        if not h or h == own or own in h:
-            return False
-        if h.split(".")[0] == ownbase:      # hopp.bio -> hopp.co ก็ของเจ้าเดิม
-            return False
-        return not any(s in h for s in NOISE)
-
+    keep = keep_fn(url, own_host)
     out, seen = [], set()
     for href, txt in _A.findall(body):
         if keep(href) and href not in seen:
@@ -164,19 +179,40 @@ def _next_hop(body):
     return None
 
 
+def _is_ssl(ex):
+    return isinstance(ex, ssl.SSLError) or isinstance(getattr(ex, "reason", None), ssl.SSLError)
+
+
 def _get(url, timeout, read_bytes):
-    """ยิง GET หนึ่งครั้ง — verify ใบรับรองก่อน ถ้าเชนเสียค่อยลองแบบไม่ verify"""
+    """ยิง GET หนึ่งครั้ง
+
+    ปกติจบในคำขอเดียว · จะลองซ้ำก็ต่อเมื่อ
+      - โดน 403/429 (เว็บย่อลิงก์กันบอท/จำกัดอัตรา) -> หมุนไปใช้ proxy IP อื่น
+      - เชนใบรับรองเสีย -> ลองใหม่แบบไม่ verify
+    รหัสอื่น (404/500) โยนออกทันที ไม่ต้องเปลืองเวลาไล่ opener"""
     req = urllib.request.Request(url, headers=UA, method="GET")
-    try:
-        with _openers(True)[0].open(req, timeout=timeout) as r:
-            return r.geturl(), r.read(read_bytes)
-    except ssl.SSLError:
-        pass
-    except urllib.error.URLError as ex:
-        if not isinstance(getattr(ex, "reason", None), ssl.SSLError):
-            raise
-    with _openers(False)[0].open(req, timeout=timeout) as r:
-        return r.geturl(), r.read(read_bytes)
+    blocked = None
+    for verify in (True, False):
+        ssl_bad = False
+        for op in _openers(verify):
+            try:
+                with op.open(req, timeout=timeout) as r:
+                    return r.geturl(), r.read(read_bytes)
+            except urllib.error.HTTPError as ex:
+                if ex.code not in (403, 429):
+                    raise
+                blocked = ex                       # ลอง IP ถัดไป
+            except Exception as ex:
+                if _is_ssl(ex):
+                    ssl_bad = True
+                    break
+                if blocked is None:
+                    raise                          # ต่อไม่ติดตั้งแต่ทางตรง = ปัญหาจริง
+        if not ssl_bad:
+            break
+    if blocked:
+        raise blocked
+    raise urllib.error.URLError("ตามลิงก์ไม่สำเร็จ")
 
 
 def one(url, max_hops=5, timeout=10, read_bytes=65536):
