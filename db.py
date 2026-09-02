@@ -71,6 +71,10 @@ def init():
             con.execute("ALTER TABLE posts ADD COLUMN created_ts INTEGER")
         if "reply_to" not in cols:
             con.execute("ALTER TABLE posts ADD COLUMN reply_to TEXT")
+        # ปลายทางจริงหลังทะลุหน้า bio-link (heylink/linktr.ee/hopp.bio ไม่ใช่ชื่อแบรนด์)
+        if "target_url" not in cols:
+            con.execute("ALTER TABLE posts ADD COLUMN target_url TEXT")
+            con.execute("ALTER TABLE posts ADD COLUMN target_brand TEXT")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ing ON posts(ingested_at DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ts ON posts(created_ts DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_brand ON posts(final_brand)")
@@ -153,6 +157,24 @@ def pending_landing(limit=None):
         q += " LIMIT %d" % int(limit)
     with _con() as con:
         return [dict(r) for r in con.execute(q)]
+
+
+def bio_pages():
+    """หน้า bio-link ที่ยังไม่รู้ปลายทาง -> {final_url: [tweet_id, ...]} (ให้ pipeline คัดต่อ)"""
+    with _con() as con:
+        rows = con.execute(
+            "SELECT tweet_id, final_url FROM posts WHERE final_url IS NOT NULL AND final_url!='' "
+            "AND (target_url IS NULL OR target_url='')").fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["final_url"], []).append(r["tweet_id"])
+    return out
+
+
+def set_target(tweet_ids, target_url, target_brand):
+    with _lock, _con() as con:
+        return sum(con.execute("UPDATE posts SET target_url=?, target_brand=? WHERE tweet_id=?",
+                               (target_url, target_brand, str(t))).rowcount for t in tweet_ids)
 
 
 def set_final(tweet_id, final_url, final_brand):

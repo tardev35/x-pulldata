@@ -65,16 +65,16 @@ def _run_bg(term):
     return True
 
 
-def _pending_bg():
-    """ปุ่ม 'ตามโดเมนที่ค้าง' — ใช้ช่องสถานะเดียวกับปุ่มดึง จะได้เห็น log สดเหมือนกัน"""
+def _job_bg(label, fn):
+    """งานเบื้องหลังที่ไม่ใช่การสแครป (ตามโดเมน / ทะลุ bio-link) — ใช้ช่องสถานะเดียวกับปุ่มดึง"""
     with _run_lock:
         if _run["busy"]:
             return False
-        _run.update(busy=True, started=int(time.time()), term="(ตามโดเมนที่ค้าง)", log=[])
+        _run.update(busy=True, started=int(time.time()), term=label, log=[])
 
     def work():
         try:
-            pipeline.resolve_pending(log=_log)
+            fn(log=_log)
         except Exception as ex:
             _log("[error] %s" % ex)
         finally:
@@ -164,7 +164,10 @@ class Handler(BaseHTTPRequestHandler):
                 db.add_keywords([term], source="seed")
             self._json({"ok": True})
         elif self.path == "/api/resolve-pending":
-            ok = _pending_bg()
+            ok = _job_bg("(ตามโดเมนที่ค้าง)", pipeline.resolve_pending)
+            self._json({"ok": ok, "busy": not ok})
+        elif self.path == "/api/resolve-bio":
+            ok = _job_bg("(ทะลุ bio-link)", pipeline.resolve_bio)
             self._json({"ok": ok, "busy": not ok})
         elif self.path == "/api/keywords/bulk":
             # หน้าคลังคีย์เวิร์ดสั่งทีละหลายคำ (เปิด/ปิด/ลบ) — ยิงทีเดียวไม่ต้องวน 200 request

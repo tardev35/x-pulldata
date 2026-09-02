@@ -164,6 +164,64 @@ def resolve_pending(limit=None, log=print):
     return {"pending": len(rows), "fixed": fixed}
 
 
+# คำบนปุ่มที่บอกว่าเป็นทางเข้าเว็บจริง (ไม่ใช่ไลน์/โซเชียล) — ใช้จัดลำดับผู้สมัคร
+_CTA = ("สมัคร", "เข้าเล่น", "ทางเข้า", "เว็บตรง", "register", "signup", "sign up", "play", "join")
+
+
+def _pick_target(cands, resolved):
+    """เลือกปลายทางที่ดีที่สุดจากปุ่มในหน้า bio-link
+
+    เกณฑ์: เป็นโดเมนจริง (ไม่ใช่ลิงก์สั้น/ไลน์) > ปุ่มที่ข้อความชวนสมัคร > ลำดับบนหน้า"""
+    best = None
+    for i, (href, label) in enumerate(cands):
+        url = resolved.get(href, href)
+        h = _host(url)
+        if not h or _in(url, REDIRECTORS) or "lin.ee" in h or "line.me" in h:
+            continue
+        score = 100 - i                                   # อยู่บนสุดของหน้า = เด่นสุด
+        if any(w in (label or "").lower() for w in _CTA):
+            score += 50
+        if best is None or score > best[0]:
+            best = (score, url)
+    return best[1] if best else None
+
+
+def resolve_bio(limit=None, log=print):
+    """ทะลุหน้า bio-link (heylink/linktr.ee/hopp.bio) ไปหาโดเมนแบรนด์จริง
+
+    หน้าพวกนี้เป็น "ป้ายรวมลิงก์" ไม่ใช่ตัวแบรนด์ — ชื่อ heylink/hopp เลยไม่มีความหมายในรายงาน
+    อ่าน HTML เอง (ฟรี) แล้วตามลิงก์ในปุ่มต่ออีกชั้นด้วย follow"""
+    pages = {u: ids for u, ids in db.bio_pages().items() if _in(u, BIOLINKS)}
+    if not pages:
+        log("[bio] ไม่มีหน้า bio-link ที่ต้องตามต่อ")
+        return {"pages": 0, "fixed": 0}
+    urls = list(pages.keys())[:int(limit)] if limit else list(pages.keys())
+    log("[bio] ตามต่อจากหน้า bio-link %d หน้า (%d โพสต์)"
+        % (len(urls), sum(len(pages[u]) for u in urls)))
+
+    fixed = miss = 0
+    for u in urls:
+        cands, via = follow.targets(u)
+        if not cands:
+            log("  [bio] %s -> อ่านไม่เจอปุ่ม (%s)" % (_host(u), via))
+            miss += 1
+            continue
+        # ปุ่มหลายอันยังเป็นลิงก์สั้นอีกชั้น -> ตามให้สุดก่อนค่อยเลือก
+        short = [h for h, _ in cands if _in(h, REDIRECTORS)]
+        resolved = {k: v[0] for k, v in follow.many(short).items() if v[0]} if short else {}
+        target = _pick_target(cands, resolved)
+        if not target:
+            log("  [bio] %s -> มีแต่ลิงก์โซเชียล ข้าม" % _host(u))
+            miss += 1
+            continue
+        brand = _brand_of(target)
+        n = db.set_target(pages[u], target, brand)
+        fixed += n
+        log("  [bio] %s -> %s (%d โพสต์) via %s" % (_host(u), brand, n, via))
+    log("[bio] ได้ปลายทาง %d โพสต์ · อ่านไม่ได้ %d หน้า" % (fixed, miss))
+    return {"pages": len(urls), "fixed": fixed}
+
+
 def run_keyword(term, log=print):
     """คืน dict สรุปผลของคีย์เวิร์ดนี้"""
     log("[scrape] %s" % term)

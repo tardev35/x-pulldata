@@ -310,6 +310,7 @@ tbody tr.new td{animation:flash 2.2s ease-out}
       <input type="text" id="runterm" placeholder="พิมพ์คำค้นหา (เว้นว่าง=ทุกคำ)">
       <button id="runbtn">▶ ดึงจาก X</button>
       <button id="fixbtn" class="ghost">🔗 ตามโดเมนที่ค้าง</button>
+      <button id="biobtn" class="ghost">🏷 ทะลุ bio-link หาแบรนด์</button>
       <div class="runlog mono" id="runlog"></div>
     </div>
   </aside>
@@ -323,7 +324,8 @@ tbody tr.new td{animation:flash 2.2s ease-out}
       <div class="search"><i>⌕</i><input type="text" id="q" placeholder="ค้นในแคปชั่น / แบรนด์ / โดเมน…"></div>
       <span class="live off" id="live"><i></i><span id="livetxt">—</span></span>
       <button class="btn" id="refresh">รีเฟรช</button>
-      
+      <div class="who"><div class="avatar">iG</div>
+        <div><b>iGaming Listening</b><span id="whomodel">—</span></div></div>
     </div>
 
     <div class="content">
@@ -440,6 +442,12 @@ function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){
 function host(u){try{return new URL(u).hostname.replace(/^www\./,"");}catch(e){return "";}}
 function short(u){var h=host(u);return h?h:(u||"");}
 function isGam(r){return r.is_gambling==1||r.is_gambling===true;}
+var BIO=["heylink.me","hopp.bio","linktr.ee","lit.link","bio.link","beacons.ai","allmylinks.com",
+         "msha.ke","komi.io","solo.to","taplink.cc","linkr.bio","direc.to","carrd.co"];
+function isBio(u){var h=host(u);return !!h&&BIO.some(function(b){return h===b||h.indexOf("."+b)>=0||h.indexOf(b)>=0;});}
+// แบรนด์จริงมาก่อนเสมอ: ปลายทางหลัง bio-link > โดเมนที่ตามได้ > ที่ AI เดา
+function brandOf(r){return r.target_brand||r.final_brand||r.brand_name||"";}
+function landingOf(r){return r.target_url||r.final_url||"";}
 function ts(r){return r.created_ts||r.ingested_at||0;}
 // ใช้วันตามเครื่อง (ไม่ใช่ UTC) ไม่งั้นโพสต์ช่วงเช้าบ้านเราจะเด้งไปเป็นเมื่อวาน
 function fdate(v){if(!v)return"";var d=new Date(v);if(isNaN(d))return String(v).slice(0,16);
@@ -469,8 +477,8 @@ function passTab(r){
 }
 function passQ(r){
   if(!q)return true;
-  var hay=((r.text||"")+" "+(r.brand_name||"")+" "+(r.final_brand||"")+" "+
-    (r.final_url||"")+" "+(r.url_landing||"")+" "+(r.author||"")).toLowerCase();
+  var hay=((r.text||"")+" "+(r.brand_name||"")+" "+(r.final_brand||"")+" "+(r.target_brand||"")+" "+
+    (r.final_url||"")+" "+(r.target_url||"")+" "+(r.url_landing||"")+" "+(r.author||"")).toLowerCase();
   return hay.indexOf(q.toLowerCase())>=0;
 }
 function pass(r){
@@ -527,7 +535,7 @@ function card(ico,lab,val,badge,cls){
 }
 function drawCards(rows){
   var gam=rows.filter(isGam), done=gam.filter(function(r){return !!r.final_url;});
-  var brands={};gam.forEach(function(r){var b=r.final_brand||r.brand_name;if(b)brands[b]=1;});
+  var brands={};gam.forEach(function(r){var b=brandOf(r);if(b)brands[b]=1;});
   // เทียบกับช่วงเวลาเท่ากันก่อนหน้า เพื่อโชว์ลูกศรขึ้น/ลงแบบ ref
   var now=Math.floor(Date.now()/1000), prev=[];
   if(days){prev=ALL.filter(function(r){return ts(r)<now-days*86400&&ts(r)>=now-2*days*86400;});}
@@ -607,10 +615,10 @@ function drawTrend(rows){
 function drawBrands(rows){
   var by={};
   rows.filter(isGam).forEach(function(r){
-    var b=r.final_brand||r.brand_name;if(!b)return;
+    var b=brandOf(r);if(!b)return;
     var o=by[b]||(by[b]={n:0,last:0,url:"",done:0});
     o.n++;o.done+=r.final_url?1:0;
-    if(ts(r)>o.last){o.last=ts(r);o.url=r.final_url||r.url_landing||"";}
+    if(ts(r)>o.last){o.last=ts(r);o.url=landingOf(r)||r.url_landing||"";}
   });
   var list=Object.keys(by).map(function(b){return {b:b,o:by[b]};})
     .sort(function(x,y){return y.o.n-x.o.n;}).slice(0,8);
@@ -631,7 +639,7 @@ function drawBrands(rows){
 function drawFeed(rows){
   var html="";
   rows.slice(0,8).forEach(function(r){
-    var b=r.final_brand||r.brand_name||"(ไม่ระบุแบรนด์)";
+    var b=brandOf(r)||"(ไม่ระบุแบรนด์)";
     html+="<div class='fitem'>"+
       (r.preview_img?"<img src='"+esc(r.preview_img)+"' data-cap='"+esc(b)+"' alt=''>":"<div class='ph'></div>")+
       "<div><b>"+esc(b)+"</b><span>"+ago(ts(r))+" · "+esc(r.search_term||"")+"</span></div>"+
@@ -649,7 +657,7 @@ function drawTable(rows){
   if(!rows.length){tb.innerHTML="<tr><td colspan='11' class='empty'>ไม่มีข้อมูลตามเงื่อนไข — ลองเปลี่ยนช่วงเวลา หรือกด ▶ ดึงจาก X</td></tr>";return;}
   var html="";
   rows.forEach(function(r,i){
-    var brand=r.final_brand||r.brand_name||"";
+    var brand=brandOf(r), viabio=r.target_url&&isBio(r.final_url);
     var kwtags=(r.keywords||[]).slice(0,4).map(function(k){return "<span class='pill'>"+esc(k)+"</span>";}).join("");
     var promo=(r.promotions||[]).slice(0,2).join(" · ");
     var isnew=first?false:!seen[r.tweet_id];
@@ -658,8 +666,9 @@ function drawTable(rows){
       "<td class='c-text'>"+esc(r.text||"")+
         (promo?"<div class='promo'>🎁 "+esc(promo)+"</div>":"")+
         (kwtags?"<div class='pills'>"+kwtags+"</div>":"")+"</td>"+
-      "<td class='brandcell"+(isGam(r)?"":" no")+"'>"+esc(brand)+"</td>"+
-      "<td>"+ulink(r.final_url)+"</td>"+
+      "<td class='brandcell"+(isGam(r)?"":" no")+"'>"+esc(brand)+
+        (viabio?"<div class='pill' title='ปลายทางหลังหน้า "+esc(host(r.final_url))+"'>via "+esc(host(r.final_url))+"</div>":"")+"</td>"+
+      "<td>"+ulink(landingOf(r))+"</td>"+
       "<td>"+ulink(r.url_landing)+"</td>"+
       "<td>"+ulink(r.url_landing_2)+"</td>"+
       "<td class='c-line'>"+esc(r.line_id||"—")+"</td>"+
@@ -779,7 +788,7 @@ document.addEventListener("click",function(e){
 function exportCsv(){
   var rows=ALL.filter(pass);
   if(!rows.length){alert("ไม่มีแถวให้ export");return;}
-  var cols=["created_at","brand_name","final_brand","final_url","url_landing","url_landing_2",
+  var cols=["created_at","brand_name","final_brand","target_brand","target_url","final_url","url_landing","url_landing_2",
             "line_id","search_term","author","tweet_url","video_url","text"];
   function cell(v){return '"'+String(v==null?"":v).replace(/"/g,'""')+'"';}
   var csv=cols.join(",")+"\r\n"+rows.map(function(r){
@@ -833,6 +842,14 @@ document.getElementById("fixbtn").onclick=function(){
   var n=ALL.filter(function(r){return isGam(r)&&!r.final_url&&!!(r.url_landing||r.url_landing_2);}).length;
   if(!confirm("ตามโดเมนจริงให้โพสต์ที่ค้าง "+n+" โพสต์? (ตามด้วย urllib ก่อน ฟรี)"))return;
   fetch("/api/resolve-pending",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
+   .then(function(r){return r.json();}).then(function(){pollRun();});
+};
+document.getElementById("biobtn").onclick=function(){
+  var n={};ALL.forEach(function(r){if(r.final_url&&!r.target_url&&isBio(r.final_url))n[r.final_url]=1;});
+  var k=Object.keys(n).length;
+  if(!k){alert("ไม่มีหน้า bio-link ที่ต้องตามต่อแล้ว");return;}
+  if(!confirm("อ่านหน้า bio-link "+k+" หน้า เพื่อหาโดเมนแบรนด์จริง? (ฟรี ไม่เสียค่า Apify)"))return;
+  fetch("/api/resolve-bio",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"})
    .then(function(r){return r.json();}).then(function(){pollRun();});
 };
 document.getElementById("runterm").onkeydown=function(e){

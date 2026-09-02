@@ -7,6 +7,7 @@ run.py — สั่ง pipeline จาก command line (ไม่ต้อง�
     python run.py all                                        # สแครปทุกคีย์เวิร์ดที่ active
     python run.py del  "สล็อตเว็บตรง"                        # ลบคีย์เวิร์ดออกจากคลัง
     python run.py fix                                        # ตามโดเมนที่ค้าง (แท็บ "รอหาโดเมน")
+    python run.py bio                                        # ทะลุหน้า bio-link หาโดเมนแบรนด์จริง
     python run.py list                                       # ดูคลังคีย์เวิร์ด
     python run.py stats                                      # สรุปตัวเลขใน DB
 """
@@ -45,6 +46,8 @@ def main(argv):
         print("รวมบันทึกใหม่ %d แถว จาก %d คีย์เวิร์ด" % (tot, len(res)))
     elif cmd == "fix":
         pipeline.resolve_pending(limit=int(argv[1]) if len(argv) > 1 else None)
+    elif cmd == "bio":
+        pipeline.resolve_bio(limit=int(argv[1]) if len(argv) > 1 else None)
     elif cmd == "list":
         for k in db.all_keywords():
             print("  [%s] %-30s hits=%-4d %s" % (

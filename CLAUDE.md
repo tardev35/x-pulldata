@@ -42,6 +42,11 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - **`follow.py` มาก่อน Apify เสมอ** — `pipeline._resolve_urls` ตามลิงก์ด้วย urllib ฟรีก่อน
   เหลือเฉพาะที่ยังเป็น `REDIRECTORS` ค่อยส่ง Apify · t.co ไม่ตอบ 301 ต้องแกะจาก `<meta refresh>`
   ในบอดี้ (อย่าเปลี่ยนไปใช้ HEAD อย่างเดียว มันคืน 200 เปล่า)
+- **อ่านหน้า bio-link ต้องใช้ header ชุดเต็ม** — `follow.UA` มี `Sec-Fetch-*`/`Accept-Language` ครบ
+  เพราะ heylink ตอบ 403 ทันทีถ้าส่งแค่ User-Agent · โดน 429 จะหมุน `PROXY_URL` ให้เอง
+  · `page()` อ่านถึง 1.5MB เพราะ hopp.bio (Wix) ฝังลิงก์จริงไว้ลึกเกิน 400KB
+- **`target_url`/`target_brand` ไม่ทับ `final_url`** — `final_url` = หน้า bio-link ที่โฆษณาใช้จริง
+  ส่วน target = โดเมนแบรนด์หลังทะลุ · UI โชว์ target ก่อนเสมอ (`brandOf`/`landingOf` ใน index.html)
 - **คำจาก AI เข้าคลังแบบปิดไว้** (`add_keywords(..., active=0)`) — ถ้าเปิดอัตโนมัติ คลังจะบาน
   จากหลักสิบเป็นหลักพันในไม่กี่รอบ = ค่า Apify บานตาม
 - **ค่าใช้จ่าย Apify**: ทั้ง scrape + resolve เสียเงินตาม usage — collector อย่าตั้งถี่ (`COLLECT_CYCLE`)
@@ -53,6 +58,7 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) · `POST /api/keyword` `{term[,active][,del]}`
 - `POST /api/keywords/bulk` `{terms:[], action:"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้ (ยืนยันครั้งเดียวต่อชุด)
 - `POST /api/resolve-pending` — กวาดโพสต์ที่ยังไม่รู้โดเมนจริง (ปุ่ม "ตามโดเมนที่ค้าง" / `run.py fix`)
+- `POST /api/resolve-bio` — ทะลุหน้า bio-link หาโดเมนแบรนด์จริง (ปุ่ม "ทะลุ bio-link" / `run.py bio`)
 
 ## repo
 GitLab: https://gitlab.com/tardev-group/x-pulldata (branch หลัก: main)

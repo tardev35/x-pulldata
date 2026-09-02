@@ -57,6 +57,11 @@
       แบบ `active=0` กันคลังบานจาก 21 → 200+ คำในไม่กี่รอบ
 - [x] `created_ts` (epoch) + migration — เรียงตามวันที่โพสต์จริงได้ (createdAt เป็นสตริงเรียงไม่ได้)
 - [x] `LLM_WORKERS` สกัด AI ขนาน 8 เธรด — 2-5 วิ/โพสต์ เหลือ 0.3 วิ/โพสต์
+- [x] **ทะลุหน้า bio-link** (`follow.targets` + `pipeline.resolve_bio`): heylink/hopp.bio/carrd
+      ฝังลิงก์ปุ่มไว้ใน HTML อยู่แล้ว อ่านเองได้ฟรี · ต้องส่ง header ชุดเต็มแบบเบราว์เซอร์ (heylink
+      ตอบ 403 ถ้าส่งแค่ UA) + หมุน proxy เมื่อโดน 429 · hopp.bio เป็น Wix ลิงก์อยู่ลึกเกิน 400KB
+      ผลจริง: ทะลุได้ 232 โพสต์ · ตารางแบรนด์เปลี่ยนจาก heylink/hopp เป็นแบรนด์จริง
+      (play 102 · proded888 79 · chopper88 79 · tesla789s 71)
 - [x] แดชบอร์ดใหม่ (แนว Proboard): sidebar ดำหุบได้, การ์ด KPI, โดนัท+กราฟเส้น (SVG เขียนเอง),
       แบรนด์ยอดฮิต, ฟีดล่าสุด, Export CSV, ดูรูปใหญ่, responsive
 
