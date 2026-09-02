@@ -222,6 +222,35 @@ def purge_loop():
 
 
 # ---------------------------------------------------------------- collector
+def clock_loop(slots):
+    """ดึงทุกคีย์เวิร์ดตามเวลานาฬิกาที่ตั้งไว้ (เช่น 07:00 กับ 19:00)
+
+    ต่างจากโหมดวนทุก N วินาที: รอบนี้กวาด "ทุกคำที่เปิดใช้" ในครั้งเดียว เวลาแน่นอน
+    คุมค่าใช้จ่ายได้ตรง ๆ (จำนวนรอบต่อวัน = จำนวนเวลาที่ตั้ง)"""
+    _log("collector: เปิดแบบตั้งเวลา — %s (เวลาเครื่อง)" % ", ".join(slots))
+    done = set()
+    while True:
+        try:
+            now = time.strftime("%H:%M")
+            key = (time.strftime("%Y-%m-%d"), now)
+            if now in slots and key not in done and not _run["busy"]:
+                done.add(key)
+                if len(done) > 20:
+                    done = set(list(done)[-10:])
+                with _run_lock:
+                    _run.update(busy=True, started=int(time.time()),
+                                term="(อัตโนมัติ %s)" % now, log=[])
+                try:
+                    pipeline.run_all(log=_log)
+                finally:
+                    with _run_lock:
+                        _run["busy"] = False
+                    _log("— จบรอบอัตโนมัติ —")
+        except Exception as ex:
+            _log("clock loop: %s" % ex)
+        time.sleep(20)
+
+
 def collector_loop():
     cycle = int(ENV.get("collect_cycle") or 900)        # ค่าเริ่ม 15 นาที (สแครปมีค่าใช้จ่าย)
     batch = 5                                            # หมุนทีละ 5 คีย์เวิร์ด/รอบ
@@ -255,7 +284,11 @@ def main():
         print("purge: เปิด — เก็บย้อนหลัง %s วัน (เช็คทุก 6 ชม.)" % ENV.get("retain_days"))
     else:
         print("purge: ปิด (ตั้ง RETAIN_DAYS ใน .env ให้มากกว่า 0)")
-    if ENV.get("collect") == "1":
+    slots = [x.strip() for x in (ENV.get("collect_at") or "").split(",") if x.strip()]
+    if ENV.get("collect") == "1" and slots:
+        threading.Thread(target=clock_loop, args=(slots,), daemon=True).start()
+        print("collector: ตั้งเวลา %s (ทุกคำที่เปิดใช้)" % ", ".join(slots))
+    elif ENV.get("collect") == "1":
         threading.Thread(target=collector_loop, daemon=True).start()
     else:
         print("collector: ปิด (ตั้ง COLLECTOR=1 ใน .env ให้สแครปเองอัตโนมัติ)")

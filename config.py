@@ -33,6 +33,7 @@ def load_env():
         "resolve_all":     os.environ.get("RESOLVE_ALL", ""),   # 1 = resolve ทุกลิงก์ (default: เฉพาะ shortener)
         "collect":         os.environ.get("COLLECTOR", ""),
         "collect_cycle":   os.environ.get("COLLECT_CYCLE", ""),
+        "collect_at":      os.environ.get("COLLECT_AT", ""),   # เวลาดึงอัตโนมัติ เช่น "07:00,19:00"
         "retain_days":     os.environ.get("RETAIN_DAYS", "0"),   # 0 = ไม่ลบทิ้ง
         "llm_workers":     os.environ.get("LLM_WORKERS", "8"),   # ยิง LLM ขนานกี่เธรด
         "scrape_workers":  os.environ.get("SCRAPE_WORKERS", "5"),  # ทำกี่คีย์เวิร์ดพร้อมกัน
@@ -44,7 +45,8 @@ def load_env():
             "APIFY_RESOLVER_ACTOR": "resolver_actor", "OPENROUTER_API_KEY": "or_key",
             "OPENROUTER_MODEL": "model", "PROXY_URL": "proxy_url", "MAX_ITEMS": "max_items",
             "RESOLVE_ALL": "resolve_all", "COLLECTOR": "collect",
-            "COLLECT_CYCLE": "collect_cycle", "RETAIN_DAYS": "retain_days",
+            "COLLECT_CYCLE": "collect_cycle", "COLLECT_AT": "collect_at",
+            "RETAIN_DAYS": "retain_days",
             "LLM_WORKERS": "llm_workers", "SCRAPE_WORKERS": "scrape_workers",
         }
         for line in f.read_text(encoding="utf-8").splitlines():
