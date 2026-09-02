@@ -126,9 +126,11 @@ def _safe_extract(f):
         return {"_error": "extract ล้ม: %s" % ex}
 
 
-def _resolve_urls(urls, log=print):
+def _resolve_urls(urls, log=print, paid=True):
     """ตามลิงก์ให้ถึงโดเมนจริง — urllib ก่อน (ฟรี เร็วกว่าหลายสิบเท่า) เหลือเท่าไรค่อยจ่ายให้ Apify
-    คืน {url เดิม: (final_url, brand)}"""
+
+    paid=False = ใช้เฉพาะช่องทางฟรี (สำหรับโพสต์ที่ AI ตีว่าไม่ใช่เว็บพนัน — อยากรู้โดเมนไว้ก่อน
+    แต่ไม่คุ้มจะจ่ายเงินตาม) · คืน {url เดิม: (final_url, brand)}"""
     # เก็บคู่ (ค่าที่บันทึกไว้ -> URL ที่ยิงได้จริง) เพราะบางแถวเป็นโดเมนเปล่าไม่มี scheme
     norm = {}
     for u in dict.fromkeys(urls):
@@ -149,7 +151,9 @@ def _resolve_urls(urls, log=print):
         else:
             left.append(u)
     log("[resolve] urllib ตามได้ %d/%d ลิงก์ ใน %.1f วิ (ฟรี)" % (len(out), len(norm), time.time() - t0))
-    if left:
+    if left and not paid:
+        log("[resolve] เหลือ %d ลิงก์ที่ urllib ตามไม่ได้ (ไม่ใช่โพสต์พนัน ข้ามการจ่าย Apify)" % len(left))
+    elif left:
         log("[resolve] ส่งต่อ Apify อีก %d ลิงก์ (มีค่าใช้จ่าย)" % len(left))
         res, err = apify.resolve([norm[u] for u in left])
         if err:
@@ -172,8 +176,14 @@ def resolve_pending(limit=None, log=print):
     if not rows:
         log("[pending] ไม่มีโพสต์ค้าง")
         return {"pending": 0, "fixed": 0}
-    log("[pending] โพสต์รอหาโดเมน %d แถว" % len(rows))
-    resolved = _resolve_urls([r["url_landing"] for r in rows], log)
+    gam = [r for r in rows if r.get("is_gambling")]
+    other = [r for r in rows if not r.get("is_gambling")]
+    log("[pending] โพสต์รอหาโดเมน %d แถว (พนัน %d · อื่น ๆ %d)" % (len(rows), len(gam), len(other)))
+    resolved = {}
+    if gam:
+        resolved.update(_resolve_urls([r["url_landing"] for r in gam], log))
+    if other:
+        resolved.update(_resolve_urls([r["url_landing"] for r in other], log, paid=False))
     fixed = 0
     for r in rows:
         fu, brand = resolved.get(r["url_landing"]) or (None, None)
@@ -281,6 +291,7 @@ def run_keyword(term, log=print):
     to_resolve = {}      # landing_url -> [tweet_id, ...] ที่ต้องอัปเดตด้วยผล resolve
     pending = {}         # tweet_id -> record ที่รอ resolve
     got_url = {}         # tweet_id -> (final_url, brand) ที่รู้แล้วในรอบนี้
+    free_resolve = {}    # landing -> [tweet_id] ของโพสต์ที่ไม่ใช่พนัน (ตามแบบฟรีอย่างเดียว)
     no_link = []         # (tweet_id, ทวีตแม่) ของโพสต์พนันที่ไม่มีลิงก์ในตัวเอง
     new_kw = set()
 
@@ -335,7 +346,19 @@ def run_keyword(term, log=print):
                 rec["final_brand"] = _brand_of(landing)
                 got_url[tid] = (landing, rec["final_brand"])
             elif fld.get("reply_to"):
-                no_link.append((tid, str(fld["reply_to"])))
+                no_link.append((tid, str(fld["reply_to"])))   # รอยืมลิงก์จากทวีตแม่ก่อน
+            else:
+                # ไม่มีลิงก์ให้ตามเลย = ใช้งานต่อทางการตลาดไม่ได้ -> ไม่นับเป็นเว็บพนัน
+                rec["is_gambling"] = False
+        else:
+            # ไม่ใช่พนัน: เมื่อก่อนข้ามการตามลิงก์ทั้งดุ้นเพื่อประหยัด Apify แต่ตอนนี้ urllib ฟรีแล้ว
+            # จึงตามให้ด้วย (AI ตีหวย/เกมบางแบบว่าไม่ใช่พนันบ่อย ๆ ปล่อยไว้จะไม่รู้โดเมนเลย)
+            landing = _best_landing(fld, ai)
+            if landing and _needs_resolve(landing):
+                free_resolve.setdefault(landing, []).append(tid)
+            elif landing:
+                rec["final_url"] = landing
+                rec["final_brand"] = _brand_of(landing)
 
         # ไม่ใช่พนัน / ไม่มีลิงก์ / โดเมนจริงอยู่แล้ว -> บันทึกเลย
         if db.upsert_post(rec):
@@ -353,16 +376,33 @@ def run_keyword(term, log=print):
             if db.upsert_post(rec):
                 added += 1
 
+    if free_resolve:
+        got = _resolve_urls(list(free_resolve.keys()), log, paid=False)
+        n = 0
+        for u, ids in free_resolve.items():
+            fu, brand = got.get(u) or (None, None)
+            if fu:
+                n += sum(db.set_final(t, fu, brand) for t in ids)
+        if n:
+            log("[resolve] โพสต์ที่ไม่ใช่พนัน: เติมโดเมนให้ %d แถว (ฟรี)" % n)
+
     # สแปม iGaming ชอบวางลิงก์ไว้ทวีตแรกทวีตเดียว แล้วตอบต่อท้ายเป็นสายยาวโดยไม่ใส่ลิงก์อีก
     # ทวีตลูกจึงไม่มีอะไรให้ตาม -> ยืมโดเมนจากทวีตแม่ถ้าแม่อยู่ในชุดเดียวกัน (ฟรี ไม่ยิงเพิ่ม)
     if no_link:
-        n = 0
+        n, orphan = 0, []
         for tid, parent in no_link:
             got = got_url.get(parent)
             if got and db.set_final(tid, got[0], got[1]):
                 n += 1
+            else:
+                orphan.append(tid)
         if n:
             log("[thread] ยืมโดเมนจากทวีตแม่ให้ %d โพสต์ที่ไม่มีลิงก์" % n)
+        if orphan:
+            # ยืมไม่ได้ (แม่ไม่อยู่ในชุดนี้) และตัวเองก็ไม่มีลิงก์ -> ไม่นับเป็นเว็บพนัน
+            m = db.set_gambling(orphan, False)
+            if m:
+                log("[thread] %d โพสต์ไม่มีลิงก์เลย -> ตีเป็นไม่ใช่เว็บพนัน" % m)
 
     if new_kw:
         # เข้าคลังแบบ "ปิดไว้" — เจ้าของเป็นคนเลือกเปิดเองในหน้าคลังคีย์เวิร์ด

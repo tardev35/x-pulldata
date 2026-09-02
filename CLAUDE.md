@@ -62,6 +62,11 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - **คำจาก AI เข้าคลังแบบปิดไว้** (`add_keywords(..., active=0)`) — ถ้าเปิดอัตโนมัติ คลังจะบาน
   จากหลักสิบเป็นหลักพันในไม่กี่รอบ = ค่า Apify บานตาม
 - **ค่าใช้จ่าย Apify**: ทั้ง scrape + resolve เสียเงินตาม usage — collector อย่าตั้งถี่ (`COLLECT_CYCLE`)
+- **ไม่มีลิงก์ = ไม่ใช่เว็บพนัน** — โพสต์ที่ AI ตีว่าพนันแต่ไม่มีลิงก์เลยจะถูกปรับ `is_gambling=0`
+  (ยกเว้นทวีตตอบที่ยืมโดเมนจากทวีตแม่ได้) · โพสต์ที่ไม่ใช่พนันตามลิงก์ให้เฉพาะทางฟรี
+  (`_resolve_urls(..., paid=False)`) ไม่จ่าย Apify
+- **`RETAIN_DAYS`** นับจาก "วันที่โพสต์" ไม่ใช่ `ingested_at` · `server.purge_loop` เช็คทุก 6 ชม.
+  (เดิมทำครั้งเดียวตอนเปิด เปิดค้างยาวก็ไม่เคยลบ)
 - **ความลับ**: `.env` + `data/` อยู่ใน `.gitignore` แล้ว — อย่า commit token/proxy/DB ขึ้น git
 
 - **หน้าเว็บโหลดแบบเพิ่มทีละนิด** — `/api/posts?since=<epoch>` เทียบกับ `updated_at`
@@ -78,6 +83,8 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - `POST /api/keyword` `{term[,active][,del]}`
 - `POST /api/keywords/bulk` `{terms:[], action:"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้ (ยืนยันครั้งเดียวต่อชุด)
 - `POST /api/resolve-pending` — กวาดโพสต์ที่ยังไม่รู้โดเมนจริง (ปุ่ม "ตามโดเมนที่ค้าง" / `run.py fix`)
+- `GET /api/runs` ประวัติการดึง (มี `from_ts`/`to_ts` ให้หน้าเว็บกรองโพสต์ของรอบนั้น)
+- `GET /api/posts/days` สรุปโพสต์ต่อวัน · `POST /api/posts/delete` `{day|before|all}` (เมนูจัดการโพสต์)
 - `POST /api/resolve-bio` — ทะลุหน้า bio-link หาโดเมนแบรนด์จริง (ปุ่ม "ทะลุ bio-link" / `run.py bio`)
 
 ## repo

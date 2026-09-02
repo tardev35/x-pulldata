@@ -130,6 +130,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"rows": [], "error": str(ex)})
         elif p == "/api/keywords":
             self._json({"rows": db.all_keywords()})
+        elif p == "/api/posts/days":
+            self._json({"rows": db.posts_by_day()})
+        elif p == "/api/runs":
+            self._json({"rows": db.recent_runs()})
         elif p == "/api/stats":
             self._json(db.stats())
         elif p == "/api/run-status":
@@ -180,6 +184,17 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/resolve-bio":
             ok = _job_bg("(ทะลุ bio-link)", pipeline.resolve_bio)
             self._json({"ok": ok, "busy": not ok})
+        elif self.path == "/api/posts/delete":
+            # หน้าจัดการโพสต์: ลบเป็นวัน / ก่อนวันที่ / ทั้งหมด (คลังคำค้นหาไม่ถูกแตะ)
+            day = (payload.get("day") or "").strip()
+            before = (payload.get("before") or "").strip()
+            everything = bool(payload.get("all"))
+            if not (day or before or everything):
+                self._json({"error": "ต้องระบุ day / before / all"}, 400)
+                return
+            n = db.delete_posts(day=day or None, before=before or None, everything=everything)
+            _log("[delete] ลบโพสต์ %d แถว (%s)" % (n, "ทั้งหมด" if everything else (day or "ก่อน " + before)))
+            self._json({"ok": True, "deleted": n})
         elif self.path == "/api/keywords/bulk":
             # หน้าคลังคีย์เวิร์ดสั่งทีละหลายคำ (เปิด/ปิด/ลบ) — ยิงทีเดียวไม่ต้องวน 200 request
             terms = [t for t in (payload.get("terms") or []) if t]
@@ -191,6 +206,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "n": n, "action": act})
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found")
+
+
+def purge_loop():
+    """เคลียร์ข้อมูลเก่าเองทุก 6 ชม. — เดิมทำแค่ตอนเปิดเซิร์ฟเวอร์ ถ้าเปิดค้างยาว ๆ ก็ไม่เคยลบเลย"""
+    days = ENV.get("retain_days")
+    while True:
+        try:
+            n = db.purge(days)
+            if n:
+                _log("[purge] ลบโพสต์ที่โพสต์เกิน %s วัน ออก %d แถว" % (days, n))
+        except Exception as ex:
+            _log("purge loop: %s" % ex)
+        time.sleep(6 * 3600)
 
 
 # ---------------------------------------------------------------- collector
@@ -215,9 +243,6 @@ def collector_loop():
 
 def main():
     db.init()
-    n = db.purge(ENV.get("retain_days"))
-    if n:
-        print("purge: ลบโพสต์เก่ากว่า %s วัน ออก %d แถว" % (ENV.get("retain_days"), n))
     print("x-pulldata — สแครป X -> สกัด AI -> หาโดเมนจริง -> โชว์บนหน้าเว็บ")
     print("  Apify token : %s" % ("ตั้งแล้ว" if ENV["apify_token"] else "ยังไม่ตั้ง (ดู .env)"))
     print("  OpenRouter  : %s (%s)" % ("ตั้งแล้ว" if ENV["or_key"] else "ยังไม่ตั้ง", ENV["model"]))
@@ -225,6 +250,11 @@ def main():
     print("  keywords    : %d คำ active" % len(db.active_keywords()))
     print("\n  เปิดเบราว์เซอร์ที่  ->  http://localhost:%d" % PORT)
     print("  หยุดด้วย Ctrl-C\n")
+    if int(ENV.get("retain_days") or 0) > 0:
+        threading.Thread(target=purge_loop, daemon=True).start()
+        print("purge: เปิด — เก็บย้อนหลัง %s วัน (เช็คทุก 6 ชม.)" % ENV.get("retain_days"))
+    else:
+        print("purge: ปิด (ตั้ง RETAIN_DAYS ใน .env ให้มากกว่า 0)")
     if ENV.get("collect") == "1":
         threading.Thread(target=collector_loop, daemon=True).start()
     else:

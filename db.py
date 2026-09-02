@@ -158,9 +158,11 @@ def upsert_post(p):
 
 def pending_landing(limit=None):
     """โพสต์พนันที่ยังไม่รู้โดเมนจริง แต่มีลิงก์ให้ตามต่อ (ปุ่ม 'ตามโดเมนที่ค้าง' ใช้)"""
-    q = ("SELECT tweet_id, url_landing FROM posts "
-         "WHERE is_gambling=1 AND (final_url IS NULL OR final_url='') "
-         "AND url_landing IS NOT NULL AND url_landing!='' ORDER BY ingested_at DESC")
+    # รวมโพสต์ที่ AI ตีว่าไม่ใช่พนันด้วย (pipeline จะตามให้เฉพาะช่องทางฟรี ไม่จ่าย Apify)
+    q = ("SELECT tweet_id, url_landing, is_gambling FROM posts "
+         "WHERE (final_url IS NULL OR final_url='') "
+         "AND url_landing IS NOT NULL AND url_landing!='' "
+         "ORDER BY is_gambling DESC, ingested_at DESC")
     if limit:
         q += " LIMIT %d" % int(limit)
     with _con() as con:
@@ -185,6 +187,30 @@ def set_target(tweet_ids, target_url, target_brand):
         return sum(con.execute(
             "UPDATE posts SET target_url=?, target_brand=?, updated_at=? WHERE tweet_id=?",
             (target_url, target_brand, now, str(t))).rowcount for t in tweet_ids)
+
+
+def set_gambling(tweet_ids, flag):
+    """ปรับธง is_gambling ทีหลัง (เช่น สรุปได้ว่าโพสต์นี้ไม่มีลิงก์เลย)"""
+    v = 1 if flag else 0
+    with _lock, _con() as con:
+        now = int(time.time())
+        return sum(con.execute(
+            "UPDATE posts SET is_gambling=?, updated_at=? WHERE tweet_id=? AND is_gambling!=?",
+            (v, now, str(t), v)).rowcount for t in tweet_ids)
+
+
+def recent_runs(limit=80):
+    """ประวัติการดึง (ใหม่สุดก่อน) + ช่วงเวลาของรอบนั้นไว้ให้หน้าเว็บกรองโพสต์ได้
+
+    `started` ในตารางคือเวลาที่ 'จบ' คีย์เวิร์ดนั้น (บันทึกตอน log) ช่วงของรอบจึงเป็น
+    ตั้งแต่รอบก่อนหน้าจบ จนถึงรอบนี้จบ"""
+    with _con() as con:
+        rows = [dict(r) for r in con.execute(
+            "SELECT * FROM runs ORDER BY id DESC LIMIT ?", (int(limit),))]
+    for i, r in enumerate(rows):
+        prev = rows[i + 1]["started"] if i + 1 < len(rows) else (r["started"] - 3600)
+        r["from_ts"], r["to_ts"] = prev, r["started"]
+    return rows
 
 
 def set_final(tweet_id, final_url, final_brand):
@@ -300,10 +326,53 @@ def stats():
             "brands": brands, "keywords": kw, "last_ingest": last}
 
 
+def posts_by_day():
+    """สรุปจำนวนโพสต์ต่อวัน (ตามวันที่โพสต์ เวลาเครื่อง) ให้หน้าจัดการโพสต์เลือกลบเป็นวัน ๆ"""
+    with _con() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT date(COALESCE(created_ts, ingested_at), 'unixepoch', 'localtime') AS day, "
+            "COUNT(*) AS n, SUM(is_gambling) AS gam "
+            "FROM posts GROUP BY day ORDER BY day DESC")]
+
+
+def delete_posts(day=None, before=None, everything=False):
+    """ลบโพสต์: วันเดียว (day='YYYY-MM-DD') / ก่อนวันที่ (before=...) / ทั้งหมด
+    ยึด 'วันที่โพสต์' เหมือน purge · คลังคำค้นหากับประวัติการรันไม่ถูกแตะ"""
+    d = "date(COALESCE(created_ts, ingested_at), 'unixepoch', 'localtime')"
+    if everything:
+        q, args = "DELETE FROM posts", ()
+    elif day:
+        q, args = "DELETE FROM posts WHERE %s = ?" % d, (day,)
+    elif before:
+        q, args = "DELETE FROM posts WHERE %s < ?" % d, (before,)
+    else:
+        return 0
+    with _lock, _con() as con:
+        n = con.execute(q, args).rowcount
+    if n > 300:
+        try:
+            with _lock, _con() as con:
+                con.execute("VACUUM")
+        except Exception:
+            pass
+    return n
+
+
 def purge(days):
+    """ลบโพสต์ที่ "วันที่โพสต์" เก่ากว่า N วัน (ไม่ใช่วันที่เราเก็บเข้ามา)
+
+    เจ้าของอยากได้แบบ: วันที่ 4 ก.ย. ต้องไม่เหลือโพสต์ของวันที่ 1 ก.ย.
+    ถ้าวัดจาก ingested_at โพสต์วันที่ 1 ที่เพิ่งสแครปวันที่ 3 จะค้างถึงวันที่ 6"""
     if not days or int(days) <= 0:
         return 0
     cut = int(time.time()) - int(days) * 86400
     with _lock, _con() as con:
-        cur = con.execute("DELETE FROM posts WHERE ingested_at < ?", (cut,))
-        return cur.rowcount
+        n = con.execute("DELETE FROM posts WHERE COALESCE(created_ts, ingested_at) < ?",
+                        (cut,)).rowcount
+    if n > 300:                      # ลบเยอะค่อยคืนพื้นที่ไฟล์ (VACUUM ล็อก DB ชั่วครู่)
+        try:
+            with _lock, _con() as con:
+                con.execute("VACUUM")
+        except Exception:
+            pass
+    return n
