@@ -64,10 +64,18 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - **ค่าใช้จ่าย Apify**: ทั้ง scrape + resolve เสียเงินตาม usage — collector อย่าตั้งถี่ (`COLLECT_CYCLE`)
 - **ความลับ**: `.env` + `data/` อยู่ใน `.gitignore` แล้ว — อย่า commit token/proxy/DB ขึ้น git
 
+- **หน้าเว็บโหลดแบบเพิ่มทีละนิด** — `/api/posts?since=<epoch>` เทียบกับ `updated_at`
+  (ไม่ใช่ `ingested_at` เพราะ resolve แก้แถวเดิม ไม่ได้เก็บใหม่) · โหลดเต็มก้อนเฉพาะตอนเปิดหน้า
+  กดรีเฟรช ทุก 1 นาที และตอนงานเบื้องหลังจบ · ตารางวาดทีละ 150 แถว (`SHOW`)
+  ถ้าเผลอกลับไปโหลดเต็มทุก 6 วิ หน้าเว็บจะกระตุกและรูปกระพริบทันที (payload ~3MB)
+- **รันหลาย server ซ้อนพอร์ตเดียวได้บน Windows** (`allow_reuse_address`) — ตัวเก่าไม่ตายจริง
+  แล้วตอบคำขอสลับกับตัวใหม่ ทำให้เหมือนโค้ดใหม่ไม่ทำงาน · เช็คด้วย `netstat -ano | findstr 8770`
+
 ## API ของ server (สำหรับต่อยอด UI)
 - `GET /api/posts` `{rows}` · `GET /api/keywords` `{rows}` · `GET /api/stats` · `GET /api/status`
 - `GET /api/run-status` สถานะ+log การดึงล่าสุด (หน้าเว็บ poll ทุก 2 วิ)
-- `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) · `POST /api/keyword` `{term[,active][,del]}`
+- `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) หรือ `{terms:[...]}` (เฉพาะคำที่เลือก)
+- `POST /api/keyword` `{term[,active][,del]}`
 - `POST /api/keywords/bulk` `{terms:[], action:"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้ (ยืนยันครั้งเดียวต่อชุด)
 - `POST /api/resolve-pending` — กวาดโพสต์ที่ยังไม่รู้โดเมนจริง (ปุ่ม "ตามโดเมนที่ค้าง" / `run.py fix`)
 - `POST /api/resolve-bio` — ทะลุหน้า bio-link หาโดเมนแบรนด์จริง (ปุ่ม "ทะลุ bio-link" / `run.py bio`)

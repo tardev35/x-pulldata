@@ -100,6 +100,11 @@ button{font-family:inherit}
 .kw.on{background:#fff;color:var(--side);font-weight:600}
 .kw .c{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--side-faint)}
 .kw.on .c{color:var(--side)}
+.kw>span:first-child{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.kw .go{font-size:11px;color:#8fd4c6;opacity:0;padding:0 3px;border-radius:5px}
+.kw:hover .go{opacity:.85}
+.kw .go:hover{opacity:1;background:#2f6f63;color:#fff}
+.kw.on .go{color:var(--teal)}
 .linkbtn{font:inherit;font-size:10.5px;letter-spacing:.06em;background:none;border:0;
   color:#8fd4c6;cursor:pointer;padding:0}
 .linkbtn:hover{text-decoration:underline}
@@ -338,6 +343,12 @@ tbody tr.new td{animation:flash 2.2s ease-out}
             <option value="0">ทั้งหมด</option>
           </select>
         </span>
+        <span class="pillbox">เรียงตาม:
+          <select id="sortby">
+            <option value="post" selected>วันที่โพสต์</option>
+            <option value="upd">อัปเดตล่าสุด</option>
+          </select>
+        </span>
         <span class="count" id="count"></span>
         <span style="flex:1"></span>
         <button class="btn dark" id="csvbtn">Export CSV ↓</button>
@@ -424,6 +435,7 @@ tbody tr.new td{animation:flash 2.2s ease-out}
       <button class="btn" id="kwmsel_none">ล้างที่เลือก</button>
       <span class="count" id="kwmsel_n">เลือก 0 คำ</span>
       <span style="flex:1"></span>
+      <button class="btn" id="kwm_run">▶ ดึงคำที่เลือก</button>
       <button class="btn" id="kwm_on">✔ เปิดใช้</button>
       <button class="btn" id="kwm_off">✕ ปิด</button>
       <button class="btn danger" id="kwm_del">🗑 ลบที่เลือก</button>
@@ -433,6 +445,7 @@ tbody tr.new td{animation:flash 2.2s ease-out}
 
 <script>
 var ALL=[], KW=[], STATUS={}, tab="all", kwFilter="", q="", days=7, seen={}, first=true;
+var sortBy="post";
 var TABS=[["all","▦","ทั้งหมด"],["gam","◉","เว็บพนัน"],["notgam","○","ไม่ใช่พนัน"],
           ["video","▶","มีวิดีโอ"],["wait","◌","รอหาโดเมน"],["nolink","✕","ไม่มีลิงก์ในโพสต์"]];
 
@@ -447,7 +460,9 @@ function isBio(u){var h=host(u);return !!h&&BIO.some(function(b){return h===b||h
 // แบรนด์จริงมาก่อนเสมอ: ปลายทางหลัง bio-link > โดเมนที่ตามได้ > ที่ AI เดา
 function brandOf(r){return r.target_brand||r.final_brand||r.brand_name||"";}
 function landingOf(r){return r.target_url||r.final_url||"";}
-function ts(r){return r.created_ts||r.ingested_at||0;}
+function ts(r){return r.created_ts||r.ingested_at||0;}          // วันที่โพสต์บน X (ใช้กรอง+กราฟ)
+function upd(r){return r.updated_at||r.ingested_at||0;}         // เวลาที่ระบบแตะแถวนี้ล่าสุด
+function sortKey(r){return sortBy==="upd"?upd(r):ts(r);}
 // ใช้วันตามเครื่อง (ไม่ใช่ UTC) ไม่งั้นโพสต์ช่วงเช้าบ้านเราจะเด้งไปเป็นเมื่อวาน
 function fdate(v){if(!v)return"";var d=new Date(v);if(isNaN(d))return String(v).slice(0,16);
   return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");}
@@ -517,9 +532,14 @@ function drawKw(){
   terms.forEach(function(k){
     var b=document.createElement("button");b.className="kw"+(kwFilter===k.term?" on":"");
     b.innerHTML="<span>"+esc(k.term)+(k.source==="ai"?" ✦":"")+(k.active?"":" (ปิด)")+
-                "</span><span class='c'>"+(cnt[k.term]||0)+"</span>";
-    b.title=(k.source==="ai"?"AI สกัดมาเอง":"ตั้งเอง")+" · hits "+k.hits+(k.active?"":" · ปิดอยู่");
-    b.onclick=function(){kwFilter=(kwFilter===k.term?"":k.term);draw();closeDrawer();};
+                "</span><span class='c'>"+(cnt[k.term]||0)+"</span>"+
+                "<span class='go' title='ดึงคำนี้จาก X เดี๋ยวนี้'>▶</span>";
+    b.title=(k.source==="ai"?"AI สกัดมาเอง":"ตั้งเอง")+" · hits "+k.hits+
+            (k.last_run?"":" · ยังไม่เคยดึง")+(k.active?"":" · ปิดอยู่");
+    b.onclick=function(e){
+      if(e.target.className==="go"){runTerms([k.term]);return;}
+      kwFilter=(kwFilter===k.term?"":k.term);draw();closeDrawer();
+    };
     box.appendChild(b);
   });
   var on=KW.filter(function(k){return k.active;}).length;
@@ -640,7 +660,7 @@ function drawFeed(rows){
   rows.slice(0,8).forEach(function(r){
     var b=brandOf(r)||"(ไม่ระบุแบรนด์)";
     html+="<div class='fitem'>"+
-      (r.preview_img?"<img src='"+esc(r.preview_img)+"' data-cap='"+esc(b)+"' alt=''>":"<div class='ph'></div>")+
+      (r.preview_img?"<img loading='lazy' decoding='async' src='"+esc(r.preview_img)+"' data-cap='"+esc(b)+"' alt=''>":"<div class='ph'></div>")+
       "<div><b>"+esc(b)+"</b><span>"+ago(ts(r))+" · "+esc(r.search_term||"")+"</span></div>"+
       "<span class='amt'>"+(r.video_url?"VDO ":"")+(r.final_url?esc(short(r.final_url)):"รอโดเมน")+"</span></div>";
   });
@@ -651,9 +671,12 @@ function drawFeed(rows){
 function ulink(u){if(!u)return"<span style='color:var(--faint)'>—</span>";
   return "<a class='u' href='"+esc(u)+"' target='_blank' title='"+esc(u)+"'>"+esc(short(u))+"</a>";}
 
+var SHOW=150;      // วาดทีละ 150 แถว — 2,000 แถวพร้อมรูปทำให้เบราว์เซอร์หน่วงทุกครั้งที่รีเฟรช
 function drawTable(rows){
   var tb=document.getElementById("tb");
   if(!rows.length){tb.innerHTML="<tr><td colspan='11' class='empty'>ไม่มีข้อมูลตามเงื่อนไข — ลองเปลี่ยนช่วงเวลา หรือกด ▶ ดึงจาก X</td></tr>";return;}
+  var total=rows.length;
+  rows=rows.slice(0,SHOW);
   var html="";
   rows.forEach(function(r,i){
     var brand=brandOf(r), viabio=r.target_url&&isBio(r.final_url);
@@ -671,17 +694,25 @@ function drawTable(rows){
       "<td>"+ulink(r.url_landing)+"</td>"+
       "<td>"+ulink(r.url_landing_2)+"</td>"+
       "<td class='c-line'>"+esc(r.line_id||"—")+"</td>"+
-      "<td class='c-date'>"+esc(fdate(r.created_at))+"</td>"+
+      "<td class='c-date' title='อัปเดตล่าสุด "+esc(ago(upd(r)))+"'>"+esc(fdate(r.created_at))+
+        (sortBy==="upd"?"<div style='color:var(--faint);font-size:10.5px'>"+esc(ago(upd(r)))+"</div>":"")+"</td>"+
       "<td>"+(r.tweet_url?"<a href='"+esc(r.tweet_url)+"' target='_blank'>โพสต์ ↗</a>":"—")+"</td>"+
-      "<td class='prev'>"+(r.preview_img?"<img src='"+esc(r.preview_img)+"' data-cap='"+esc(brand)+"' alt=''>":"")+"</td>"+
+      "<td class='prev'>"+(r.preview_img?"<img loading='lazy' decoding='async' src='"+esc(r.preview_img)+"' data-cap='"+esc(brand)+"' alt=''>":"")+"</td>"+
       "<td>"+(r.video_url?"<a class='vd' href='"+esc(r.video_url)+"' target='_blank'>▶ วิดีโอ</a>":"")+"</td>"+
     "</tr>";
   });
+  if(total>rows.length){
+    html+="<tr><td colspan='11' style='text-align:center;padding:16px'>"+
+      "<button class='btn' id='morebtn'>โหลดเพิ่ม 150 แถว (แสดง "+rows.length+" จาก "+total+")</button></td></tr>";
+  }
   tb.innerHTML=html;
+  var mb=document.getElementById("morebtn");
+  if(mb)mb.onclick=function(){SHOW+=150;draw();};
 }
 
 function draw(){
   drawTabs();drawKw();
+  ALL.sort(function(a,b){return sortKey(b)-sortKey(a);});
   var rows=ALL.filter(pass), base=ranged();
   document.getElementById("count").textContent=rows.length+" / "+ALL.length+" โพสต์";
   var newest=ALL.length?ts(ALL[0]):0, oldest=base.length?ts(base[base.length-1]):0;
@@ -759,6 +790,18 @@ function kwmBulk(act,terms){
    .then(function(){KWM.busy=false;});
 }
 
+/* ---------------- สั่งดึง ---------------- */
+function runTerms(terms){
+  if(!terms.length)return;
+  var what=terms.length===1?('"'+terms[0]+'"'):(terms.length+" คำ");
+  if(!confirm("ดึงข้อมูลจาก X สำหรับ "+what+" ?"))return;
+  fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({terms:terms})})
+   .then(function(r){return r.json();})
+   .then(function(d){ if(d.busy)alert("มีงานกำลังทำอยู่ รอให้จบก่อนนะ"); pollRun(); })
+   .catch(function(){alert("สั่งไม่สำเร็จ");});
+}
+
 /* ---------------- ดูรูปใหญ่ ---------------- */
 // pbs.twimg.com ส่ง thumbnail มาเป็น name=small — สลับเป็น large จะได้ภาพเต็ม
 function bigimg(u){
@@ -799,9 +842,28 @@ function exportCsv(){
 }
 
 /* ---------------- โหลดข้อมูล ---------------- */
-function loadPosts(){
-  fetch("/api/posts").then(function(r){return r.json();}).then(function(d){
-    ALL=d.rows||[];draw();
+var SINCE=0, POLLS=0, BUSY_BEFORE=false;
+// ดึงทั้งก้อนครั้งเดียวตอนเปิด แล้วหลังจากนั้นขอเฉพาะแถวใหม่ (?since=) — ของเดิมโหลด 3MB
+// ทุก 6 วินาทีแล้ววาดตารางใหม่ทั้งหมด รูปเลยกระพริบและหน้าค้างเป็นจังหวะ
+function loadPosts(full){
+  var url=(full||!SINCE)?"/api/posts":"/api/posts?since="+SINCE;
+  fetch(url).then(function(r){return r.json();}).then(function(d){
+    var rows=d.rows||[];
+    if(d.now)SINCE=Math.max(SINCE,d.now);
+    if(full||!ALL.length){ALL=rows;}
+    else{
+      if(!rows.length)return;                 // ไม่มีอะไรใหม่ = ไม่ต้องวาดใหม่เลย
+      // rows = ทั้งแถวใหม่และแถวเดิมที่เพิ่ง resolve เจอโดเมน -> ทับของเดิมด้วย
+      var at={};ALL.forEach(function(r,i){at[r.tweet_id]=i;});
+      var add=[];
+      rows.forEach(function(r){
+        if(at[r.tweet_id]===undefined)add.push(r);
+        else ALL[at[r.tweet_id]]=r;
+      });
+      if(!add.length&&!rows.length)return;
+      ALL=add.concat(ALL);
+    }
+    draw();
   }).catch(function(){});
 }
 function loadSide(){
@@ -823,6 +885,8 @@ function pollRun(){
       btn.disabled=fix.disabled=true;btn.textContent="⏳ กำลังดึง…";}
     else{live.className="live off";txt.textContent="ว่าง";
       btn.disabled=fix.disabled=false;btn.textContent="▶ ดึงจาก X";}
+    if(BUSY_BEFORE&&!s.busy)loadPosts(true);   // จบงานแล้วโหลดเต็มรอบ (resolve แก้แถวเดิม ไม่ใช่แถวใหม่)
+    BUSY_BEFORE=!!s.busy;
     var rl=document.getElementById("runlog");
     rl.textContent=(s.log||[]).slice(-40).join("\n");rl.scrollTop=rl.scrollHeight;
   }).catch(function(){});
@@ -831,7 +895,8 @@ function pollRun(){
 /* ---------------- ปุ่ม ---------------- */
 document.getElementById("q").oninput=function(){q=this.value;draw();};
 document.getElementById("days").onchange=function(){days=parseInt(this.value,10);draw();};
-document.getElementById("refresh").onclick=function(){loadPosts();loadSide();};
+document.getElementById("sortby").onchange=function(){sortBy=this.value;SHOW=150;draw();};
+document.getElementById("refresh").onclick=function(){loadPosts(true);loadSide();};
 document.getElementById("csvbtn").onclick=exportCsv;
 document.getElementById("runbtn").onclick=function(){
   var t=document.getElementById("runterm").value.trim();
@@ -875,6 +940,11 @@ document.getElementById("kwmq").oninput=function(){KWM.q=this.value;drawKwm();};
 document.getElementById("kwmsel_all").onclick=function(){
   kwmRows().forEach(function(k){KWM.sel[k.term]=1;});drawKwm();};
 document.getElementById("kwmsel_none").onclick=function(){KWM.sel={};drawKwm();};
+document.getElementById("kwm_run").onclick=function(){
+  var t=Object.keys(KWM.sel);
+  if(!t.length){alert("ยังไม่ได้เลือกคำ");return;}
+  runTerms(t);kwmOpen(false);
+};
 document.getElementById("kwm_on").onclick=function(){kwmBulk("on");};
 document.getElementById("kwm_off").onclick=function(){kwmBulk("off");};
 document.getElementById("kwm_del").onclick=function(){kwmBulk("del");};
@@ -882,7 +952,7 @@ document.addEventListener("keydown",function(e){
   if(e.key==="Escape"){kwmOpen(false);document.getElementById("lb").hidden=true;}});
 
 loadPosts();loadSide();pollRun();
-setInterval(loadPosts,6000);
+setInterval(function(){POLLS++;loadPosts(POLLS%10===0);},6000);   // ทุก 10 รอบ (1 นาที) โหลดเต็มที
 setInterval(loadSide,15000);
 setInterval(pollRun,2000);
 </script>

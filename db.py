@@ -75,6 +75,12 @@ def init():
         if "target_url" not in cols:
             con.execute("ALTER TABLE posts ADD COLUMN target_url TEXT")
             con.execute("ALTER TABLE posts ADD COLUMN target_brand TEXT")
+        # เวลาที่ระบบแตะแถวนี้ล่าสุด (เก็บใหม่ / resolve เจอโดเมน / ทะลุ bio-link)
+        # ingested_at ใช้แทนไม่ได้ เพราะ resolve แก้แถวเดิมโดยไม่ถือว่าเป็นการเก็บใหม่
+        if "updated_at" not in cols:
+            con.execute("ALTER TABLE posts ADD COLUMN updated_at INTEGER")
+            con.execute("UPDATE posts SET updated_at=ingested_at WHERE updated_at IS NULL")
+            con.execute("CREATE INDEX IF NOT EXISTS ix_posts_upd ON posts(updated_at DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ing ON posts(ingested_at DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_ts ON posts(created_ts DESC)")
         con.execute("CREATE INDEX IF NOT EXISTS ix_posts_brand ON posts(final_brand)")
@@ -130,21 +136,23 @@ def upsert_post(p):
         con.execute("""INSERT INTO posts(
             tweet_id,tweet_url,created_at,author,location,text,brand_name,final_brand,
             promotions,keywords,cta,url_landing,url_landing_2,final_url,line_id,
-            preview_img,video_url,is_gambling,search_term,ingested_at,raw,created_ts,reply_to)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            preview_img,video_url,is_gambling,search_term,ingested_at,raw,created_ts,reply_to,
+            updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(tweet_id) DO UPDATE SET
             final_brand=excluded.final_brand, final_url=excluded.final_url,
             brand_name=excluded.brand_name, promotions=excluded.promotions,
             keywords=excluded.keywords, cta=excluded.cta,
             url_landing=excluded.url_landing, url_landing_2=excluded.url_landing_2,
-            line_id=excluded.line_id, is_gambling=excluded.is_gambling""",
+            line_id=excluded.line_id, is_gambling=excluded.is_gambling,
+            updated_at=excluded.updated_at""",
             (str(p.get("tweet_id")), p.get("tweet_url"), p.get("created_at"), p.get("author"),
              p.get("location"), p.get("text"), p.get("brand_name"), p.get("final_brand"),
              _j(p.get("promotions")), _j(p.get("keywords")), p.get("cta"),
              p.get("url_landing"), p.get("url_landing_2"), p.get("final_url"), p.get("line_id"),
              p.get("preview_img"), p.get("video_url"), 1 if p.get("is_gambling", True) else 0,
              p.get("search_term"), int(time.time()), _j(p.get("raw")),
-             to_ts(p.get("created_at")), p.get("reply_to")))
+             to_ts(p.get("created_at")), p.get("reply_to"), int(time.time())))
     return new
 
 
@@ -173,21 +181,31 @@ def bio_pages():
 
 def set_target(tweet_ids, target_url, target_brand):
     with _lock, _con() as con:
-        return sum(con.execute("UPDATE posts SET target_url=?, target_brand=? WHERE tweet_id=?",
-                               (target_url, target_brand, str(t))).rowcount for t in tweet_ids)
+        now = int(time.time())
+        return sum(con.execute(
+            "UPDATE posts SET target_url=?, target_brand=?, updated_at=? WHERE tweet_id=?",
+            (target_url, target_brand, now, str(t))).rowcount for t in tweet_ids)
 
 
 def set_final(tweet_id, final_url, final_brand):
     with _lock, _con() as con:
-        return con.execute("UPDATE posts SET final_url=?, final_brand=? WHERE tweet_id=?",
-                           (final_url, final_brand, str(tweet_id))).rowcount
+        return con.execute(
+            "UPDATE posts SET final_url=?, final_brand=?, updated_at=? WHERE tweet_id=?",
+            (final_url, final_brand, int(time.time()), str(tweet_id))).rowcount
 
 
-def recent_posts(limit=3000):
+def recent_posts(limit=3000, since=None):
+    """since = epoch -> คืนเฉพาะแถวที่เก็บเข้ามาหลังจากนั้น (หน้าเว็บ poll แบบเพิ่มทีละนิด
+    ไม่ต้องโหลดใหม่ทั้งก้อนทุก 6 วินาที)"""
+    q = "SELECT * FROM posts"
+    args = []
+    if since:
+        q += " WHERE COALESCE(updated_at, ingested_at) > ?"
+        args.append(int(since))
+    q += " ORDER BY COALESCE(created_ts, ingested_at) DESC LIMIT ?"
+    args.append(int(limit))
     with _con() as con:
-        rows = con.execute(
-            "SELECT * FROM posts ORDER BY COALESCE(created_ts, ingested_at) DESC LIMIT ?",
-            (int(limit),)).fetchall()
+        rows = con.execute(q, args).fetchall()
     out = []
     for r in rows:
         d = dict(r)

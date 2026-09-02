@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -42,15 +43,19 @@ def _log(msg):
         _run["log"] = _run["log"][-200:]
 
 
-def _run_bg(term):
+def _run_bg(term, terms=None):
+    """term = คำเดียว (เว้นว่าง = ทุกคำที่เปิดใช้) · terms = รายชื่อคำที่เลือกมาจากคลัง"""
+    label = ("%d คำที่เลือก" % len(terms)) if terms else (term or "(ทุกคีย์เวิร์ด)")
     with _run_lock:
         if _run["busy"]:
             return False
-        _run.update(busy=True, started=int(time.time()), term=term or "(ทุกคีย์เวิร์ด)", log=[])
+        _run.update(busy=True, started=int(time.time()), term=label, log=[])
 
     def work():
         try:
-            if term:
+            if terms:
+                pipeline.run_terms(terms, log=_log)
+            elif term:
                 pipeline.run_keyword(term, log=_log)
             else:
                 pipeline.run_all(log=_log)
@@ -115,7 +120,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, "text/plain; charset=utf-8", "หา index.html ไม่เจอ".encode())
         elif p.startswith("/api/posts"):
             try:
-                self._json({"rows": db.recent_posts()})
+                qs = urllib.parse.parse_qs(urllib.parse.urlparse(p).query)
+                since = int((qs.get("since") or [0])[0] or 0)
+                rows = db.recent_posts(since=since or None)
+                self._json({"rows": rows, "since": since,
+                            "now": max([(r.get("updated_at") or r.get("ingested_at") or 0)
+                                        for r in rows] or [since])})
             except Exception as ex:
                 self._json({"rows": [], "error": str(ex)})
         elif p == "/api/keywords":
@@ -147,8 +157,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/run":
             term = (payload.get("term") or "").strip()
-            ok = _run_bg(term)
-            self._json({"ok": ok, "busy": not ok, "term": term})
+            terms = [str(t).strip() for t in (payload.get("terms") or []) if str(t).strip()]
+            ok = _run_bg(term, terms)
+            self._json({"ok": ok, "busy": not ok, "term": term, "n": len(terms)})
         elif self.path == "/api/keyword":
             term = (payload.get("term") or "").strip()
             if not term:

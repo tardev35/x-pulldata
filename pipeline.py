@@ -377,6 +377,17 @@ def run_keyword(term, log=print):
     return {"term": term, "scraped": len(tweets), "added": added, "skipped": skipped}
 
 
+def run_terms(terms, log=print):
+    """ดึงเฉพาะคำที่ระบุมา (ปุ่ม ▶ ข้างคำ / ปุ่ม 'ดึงคำที่เลือก' ในคลัง)"""
+    out = []
+    for t in [x for x in dict.fromkeys(terms) if x]:
+        try:
+            out.append(run_keyword(t, log=log))
+        except Exception as ex:
+            log("[error] %s: %s" % (t, ex))
+    return out
+
+
 def run_all(limit=None, log=print):
     kws = db.active_keywords()
     if limit:
