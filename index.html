@@ -766,7 +766,10 @@ function drawTable(rows){
         (kwtags?"<div class='pills'>"+kwtags+"</div>":"")+"</td>"+
       "<td class='brandcell"+(isGam(r)?"":" no")+"'>"+esc(brand)+
         (viabio?"<div class='pill' title='ปลายทางหลังหน้า "+esc(host(r.final_url))+"'>via "+esc(host(r.final_url))+"</div>":"")+"</td>"+
-      "<td>"+ulink(landingOf(r))+"</td>"+
+      "<td>"+(landingOf(r)?ulink(landingOf(r)):
+        (r.url_landing?"<span class='stat wait' title='"+esc(r.url_landing)+
+          " — ลิงก์ย่อปลายทางตั้งด่านกันบอท (Cloudflare) ตามต่อไม่ได้'>🔒 ตามต่อไม่ได้</span>"
+          :"<span style='color:var(--faint)'>—</span>"))+"</td>"+
       "<td>"+ulink(r.url_landing)+"</td>"+
       "<td>"+ulink(r.url_landing_2)+"</td>"+
       "<td class='c-line'>"+esc(r.line_id||"—")+"</td>"+

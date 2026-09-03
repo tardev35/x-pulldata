@@ -37,6 +37,10 @@ BIOLINKS = {
 }
 SHORTENERS = REDIRECTORS | BIOLINKS
 
+# โฮสต์ที่ย้ายไปอยู่หลัง Cloudflare challenge — เบราว์เซอร์จริงของ Apify (ทั้ง chromium/firefox)
+# ก็ยังติดหน้า "Just a moment..." ส่งไปก็เสียเงินเปล่า ตัดทิ้งตั้งแต่ต้นทาง
+BLOCKED = {"shorturl.asia"}
+
 
 def _host(url):
     try:
@@ -156,6 +160,12 @@ def _resolve_urls(urls, log=print, paid=True):
             out[u] = (fu, _brand_of(fu))
         else:
             left.append(u)
+    # ตัดโฮสต์ที่รู้ว่าบล็อกออกก่อน จะได้ไม่จ่าย Apify ให้กับสิ่งที่ยังไงก็ไม่ผ่าน
+    blocked = [u for u in left if _in((got.get(norm[u]) or (norm[u],))[0] or norm[u], BLOCKED)]
+    if blocked:
+        left = [u for u in left if u not in blocked]
+        log("[resolve] %d ลิงก์จบที่เว็บกันบอท (%s) — ข้าม ไม่ส่ง Apify"
+            % (len(blocked), ", ".join(sorted(BLOCKED))))
     log("[resolve] urllib ตามได้ %d/%d ลิงก์ ใน %.1f วิ (ฟรี)" % (len(out), len(norm), time.time() - t0))
     if left and not paid:
         log("[resolve] เหลือ %d ลิงก์ที่ urllib ตามไม่ได้ (ไม่ใช่โพสต์พนัน ข้ามการจ่าย Apify)" % len(left))
@@ -190,12 +200,17 @@ def resolve_pending(limit=None, log=print):
         resolved.update(_resolve_urls([r["url_landing"] for r in gam], log))
     if other:
         resolved.update(_resolve_urls([r["url_landing"] for r in other], log, paid=False))
-    fixed = 0
+    fixed, failed = 0, []
     for r in rows:
         fu, brand = resolved.get(r["url_landing"]) or (None, None)
         if fu and db.set_final(r["tweet_id"], fu, brand):
             fixed += 1
-    log("[pending] เติมโดเมนจริงให้ %d แถว (เหลือค้าง %d)" % (fixed, len(rows) - fixed))
+        else:
+            failed.append(r["tweet_id"])
+    if failed:
+        db.bump_resolve_tries(failed)
+    log("[pending] เติมโดเมนจริงให้ %d แถว (ตามไม่ได้ %d — ครบ 3 ครั้งจะเลิกตาม)"
+        % (fixed, len(failed)))
     return {"pending": len(rows), "fixed": fixed}
 
 

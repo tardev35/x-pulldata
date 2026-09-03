@@ -77,6 +77,10 @@ def init():
             con.execute("ALTER TABLE posts ADD COLUMN target_brand TEXT")
         # เวลาที่ระบบแตะแถวนี้ล่าสุด (เก็บใหม่ / resolve เจอโดเมน / ทะลุ bio-link)
         # ingested_at ใช้แทนไม่ได้ เพราะ resolve แก้แถวเดิมโดยไม่ถือว่าเป็นการเก็บใหม่
+        # ลิงก์บางเจ้า (shorturl.asia) ย้ายไปหลัง Cloudflare challenge = ตามไม่ได้ถาวร
+        # นับครั้งที่พลาดไว้ จะได้เลิกตามและไม่จ่าย Apify ซ้ำทุกรอบ
+        if "resolve_tries" not in cols:
+            con.execute("ALTER TABLE posts ADD COLUMN resolve_tries INTEGER DEFAULT 0")
         if "updated_at" not in cols:
             con.execute("ALTER TABLE posts ADD COLUMN updated_at INTEGER")
             con.execute("UPDATE posts SET updated_at=ingested_at WHERE updated_at IS NULL")
@@ -162,6 +166,7 @@ def pending_landing(limit=None):
     q = ("SELECT tweet_id, url_landing, is_gambling FROM posts "
          "WHERE (final_url IS NULL OR final_url='') "
          "AND url_landing IS NOT NULL AND url_landing!='' "
+         "AND COALESCE(resolve_tries,0) < 3 "          # พลาดครบ 3 ครั้งแล้วเลิกตาม
          "ORDER BY is_gambling DESC, ingested_at DESC")
     if limit:
         q += " LIMIT %d" % int(limit)
@@ -187,6 +192,14 @@ def set_target(tweet_ids, target_url, target_brand):
         return sum(con.execute(
             "UPDATE posts SET target_url=?, target_brand=?, updated_at=? WHERE tweet_id=?",
             (target_url, target_brand, now, str(t))).rowcount for t in tweet_ids)
+
+
+def bump_resolve_tries(tweet_ids):
+    """บันทึกว่าตามลิงก์ไม่สำเร็จ — ครบ 3 ครั้งจะไม่ถูกหยิบมาตามอีก"""
+    with _lock, _con() as con:
+        return sum(con.execute(
+            "UPDATE posts SET resolve_tries=COALESCE(resolve_tries,0)+1 WHERE tweet_id=?",
+            (str(t),)).rowcount for t in tweet_ids)
 
 
 def set_gambling(tweet_ids, flag):
