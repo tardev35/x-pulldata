@@ -304,6 +304,7 @@ def run_keyword(term, log=print):
     log("[scrape] %s" % term)
     tweets, err = apify.scrape(term)
     if err:
+        log("[scrape] ล้ม: %s" % err[:160])      # เดิมเก็บลง DB เงียบ ๆ หน้าเว็บเลยเห็นแค่ "จบรอบ"
         db.log_run(term, 0, 0, 0, "scrape error: " + err)
         db.mark_keyword_run(term, 0)
         return {"term": term, "error": err}
@@ -438,6 +439,16 @@ def run_keyword(term, log=print):
     return {"term": term, "scraped": len(tweets), "added": added, "skipped": skipped}
 
 
+# error ระดับบัญชี — เจอคำแรกแล้วคำที่เหลือก็เจอเหมือนกันแน่นอน หยุดทั้งชุดไปเลย
+_ACCOUNT_ERRORS = ("hard limit", "platform-feature-disabled", "user-or-token-not-found",
+                   "authentication token")
+
+
+def _account_error(err):
+    e = (err or "").lower()
+    return any(k in e for k in _ACCOUNT_ERRORS)
+
+
 def _run_many(terms, log=print):
     """ทำหลายคีย์เวิร์ดพร้อมกัน — เวลาส่วนใหญ่คือ "รอ Apify สแครป" ไม่ใช่งานของเครื่องเรา
     ทำทีละคำจึงเสียเวลาเปล่า · เขียน DB ยังผ่าน lock เดิม + WAL ไม่ชนกัน"""
@@ -446,14 +457,26 @@ def _run_many(terms, log=print):
         return []
     n = max(1, int(ENV.get("scrape_workers") or 1))
 
+    stop = threading.Event()
+
     def one(term):
+        if stop.is_set():
+            return {"term": term, "error": "ข้าม — บัญชี Apify ใช้งานไม่ได้"}
         # หลายคำพิมพ์ log ปนกัน ต้องมีชื่อคำนำหน้าไม่งั้นอ่านไม่รู้เรื่อง
         tag = lambda m: log("«%s» %s" % (term, m))
         try:
-            return run_keyword(term, log=tag if n > 1 else log)
+            res = run_keyword(term, log=tag if n > 1 else log)
         except Exception as ex:
             log("[error] %s: %s" % (term, ex))
             return {"term": term, "error": str(ex)}
+        err = res.get("error") or ""
+        if _account_error(err) and not stop.is_set():
+            stop.set()
+            log("[apify] ⛔ บัญชีใช้งานไม่ได้: %s — หยุดคำที่เหลือทั้งหมด" % err[:120])
+            if "hard limit" in err.lower():
+                log("[apify] วิธีแก้: เพิ่ม usage limit ที่ console.apify.com/billing/limits "
+                    "หรือรอรอบบิลใหม่ (ยอดรีเซ็ตเอง)")
+        return res
 
     if n == 1:
         return [one(t) for t in terms]

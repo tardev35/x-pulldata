@@ -33,7 +33,12 @@ def _run_sync(actor, payload, timeout=300):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8", "ignore"))
     except urllib.error.HTTPError as ex:
-        return [], "Apify %s: %s" % (ex.code, ex.read()[:200].decode("utf-8", "ignore"))
+        raw = ex.read()[:800].decode("utf-8", "ignore")
+        try:                                   # Apify ห่อ error เป็น JSON — เอาแค่ข้อความให้อ่านรู้เรื่อง
+            msg = json.loads(raw).get("error", {}).get("message") or raw[:200]
+        except Exception:
+            msg = raw[:200]
+        return [], "Apify %s: %s" % (ex.code, msg)
     except Exception as ex:
         return [], "เรียก Apify ไม่ได้: %s" % ex
     return (data if isinstance(data, list) else []), None
