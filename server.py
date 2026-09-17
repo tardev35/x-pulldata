@@ -197,10 +197,19 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "deleted": n})
         elif self.path == "/api/keywords/bulk":
             # หน้าคลังคีย์เวิร์ดสั่งทีละหลายคำ (เปิด/ปิด/ลบ) — ยิงทีเดียวไม่ต้องวน 200 request
-            terms = [t for t in (payload.get("terms") or []) if t]
+            terms = [str(t).strip() for t in (payload.get("terms") or []) if str(t).strip()]
+            terms = list(dict.fromkeys(terms))
             act = payload.get("action")
-            if not terms or act not in ("on", "off", "del"):
-                self._json({"error": "ต้องมี terms และ action = on/off/del"}, 400)
+            if not terms or act not in ("add", "on", "off", "del"):
+                self._json({"error": "ต้องมี terms และ action = add/on/off/del"}, 400)
+                return
+            if act == "add":
+                # เพิ่มเอง = ตั้งใจจะดึงคำนี้ -> คำใหม่เข้าคลังแบบเปิดใช้ทันที
+                # คำที่มีอยู่แล้วแต่ปิดไว้ (เช่นที่ AI ใส่มา) ก็เปิดให้ด้วย ไม่ต้องไปหาในคลังเอง
+                added = db.add_keywords(terms, source="seed", active=1)
+                turned_on = db.set_keywords_active(terms, True)
+                self._json({"ok": True, "action": act, "added": added, "turned_on": turned_on,
+                            "already": len(terms) - added - turned_on, "terms": terms})
                 return
             n = db.del_keywords(terms) if act == "del" else db.set_keywords_active(terms, act == "on")
             self._json({"ok": True, "n": n, "action": act})

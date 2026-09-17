@@ -88,7 +88,8 @@ DB อยู่ `data/pulldata.db` (WAL) — ลบทิ้งได้ปล�
 - `GET /api/run-status` สถานะ+log การดึงล่าสุด (หน้าเว็บ poll ทุก 2 วิ)
 - `POST /api/run` `{term}` (เว้นว่าง=ทุกคำ) หรือ `{terms:[...]}` (เฉพาะคำที่เลือก)
 - `POST /api/keyword` `{term[,active][,del]}`
-- `POST /api/keywords/bulk` `{terms:[], action:"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้ (ยืนยันครั้งเดียวต่อชุด)
+- `POST /api/keywords/bulk` `{terms:[], action:"add"|"on"|"off"|"del"}` — หน้าคลังคำค้นหาใช้
+  `add` = คำใหม่เข้าคลังแบบเปิดใช้ + เปิดคำเดิมที่ปิดอยู่ให้ด้วย · คืน `{added, turned_on, already}`
 - `POST /api/resolve-pending` — กวาดโพสต์ที่ยังไม่รู้โดเมนจริง (ปุ่ม "ตามโดเมนที่ค้าง" / `run.py fix`)
 - `GET /api/runs` ประวัติการดึง (มี `from_ts`/`to_ts` ให้หน้าเว็บกรองโพสต์ของรอบนั้น)
 - `GET /api/posts/days` สรุปโพสต์ต่อวัน · `POST /api/posts/delete` `{day|before|all}` (เมนูจัดการโพสต์)

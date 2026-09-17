@@ -307,7 +307,10 @@ tbody tr.new td{animation:flash 2.2s ease-out}
 
     <div class="sidehead">
       <span>คำค้นหา <span id="kwstat"></span></span>
-      <button class="linkbtn" id="kwmopen">จัดการคลัง</button>
+      <span style="display:flex;gap:10px">
+        <button class="linkbtn" id="kwaddopen">+ เพิ่มคำ</button>
+        <button class="linkbtn" id="kwmopen">จัดการคลัง</button>
+      </span>
     </div>
     <div class="kwlist" id="kwlist"></div>
 
@@ -482,6 +485,14 @@ tbody tr.new td{animation:flash 2.2s ease-out}
       <span class="count" id="kwmstat"></span>
       <span style="flex:1"></span>
       <button class="btn" id="kwmclose">ปิด ✕</button>
+    </div>
+    <div class="sheetbar" style="background:var(--panel-2);align-items:flex-start">
+      <b style="font-size:13px;padding-top:7px;white-space:nowrap">➕ เพิ่มคำเอง</b>
+      <textarea id="kwadd" rows="1" placeholder="พิมพ์คำค้นหา — หลายคำคั่นด้วย , หรือขึ้นบรรทัดใหม่ (Enter = เพิ่ม · Shift+Enter = ขึ้นบรรทัด)"
+        style="flex:1;min-width:220px;font:inherit;font-size:13px;padding:7px 12px;border-radius:8px;
+        border:1px solid var(--line);background:var(--panel);color:var(--ink);resize:vertical;max-height:160px"></textarea>
+      <button class="btn dark" id="kwaddbtn">เพิ่ม</button>
+      <span class="count" id="kwaddmsg" style="flex-basis:100%;min-height:0"></span>
     </div>
     <div class="sheetbar">
       <input type="text" id="kwmq" placeholder="ค้นในคลัง…">
@@ -946,6 +957,34 @@ function logOpen(v){
   if(v){loadRuns();drawLog();}
 }
 
+/* ---------------- เพิ่มคำเอง ---------------- */
+function kwAdd(){
+  var box=document.getElementById("kwadd"), msg=document.getElementById("kwaddmsg");
+  var terms=box.value.split(/[,\n\r]+/).map(function(t){return t.trim();}).filter(function(t){return t;});
+  if(!terms.length){box.focus();return;}
+  var long=terms.filter(function(t){return t.length>80;});
+  if(long.length){msg.textContent="คำยาวเกิน 80 ตัวอักษร: "+long[0].slice(0,30)+"…";return;}
+  fetch("/api/keywords/bulk",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({terms:terms,action:"add"})})
+   .then(function(r){return r.json();})
+   .then(function(d){
+     if(d.error){msg.textContent=d.error;return;}
+     var parts=[];
+     if(d.added)parts.push("เพิ่มใหม่ "+d.added+" คำ");
+     if(d.turned_on)parts.push("เปิดคำเดิมที่ปิดไว้ "+d.turned_on+" คำ");
+     if(d.already)parts.push("มีอยู่แล้ว "+d.already+" คำ");
+     msg.innerHTML="✔ "+esc(parts.join(" · "))+
+       " — <b>เลือกไว้ให้แล้ว</b> กด ▶ ดึงคำที่เลือก ได้เลย";
+     box.value="";
+     // เลือกคำที่เพิ่งเพิ่มไว้ให้ จะได้กดดึงต่อได้ทันที
+     KWM.sel={};(d.terms||terms).forEach(function(t){KWM.sel[t]=1;});
+     KWM.q="";document.getElementById("kwmq").value="";KWM.f="all";
+     return fetch("/api/keywords").then(function(r){return r.json();}).then(function(x){
+       KW=x.rows||[];drawKwm();draw();
+     });
+   }).catch(function(){msg.textContent="เพิ่มไม่สำเร็จ";});
+}
+
 /* ---------------- สั่งดึง ---------------- */
 function runTerms(terms){
   if(!terms.length)return;
@@ -1106,9 +1145,17 @@ document.getElementById("logmodal").onclick=function(e){if(e.target===this)logOp
 document.getElementById("logclear").onclick=function(){runWin=null;logOpen(false);draw();};
 document.getElementById("runchip").onclick=function(){runWin=null;draw();};
 document.getElementById("kwmopen").onclick=function(){kwmOpen(true);};
+document.getElementById("kwaddopen").onclick=function(){
+  kwmOpen(true);document.getElementById("kwaddmsg").textContent="";
+  setTimeout(function(){document.getElementById("kwadd").focus();},30);
+};
 document.getElementById("kwmclose").onclick=function(){kwmOpen(false);};
 document.getElementById("kwmodal").onclick=function(e){if(e.target===this)kwmOpen(false);};
 document.getElementById("kwmq").oninput=function(){KWM.q=this.value;drawKwm();};
+document.getElementById("kwaddbtn").onclick=kwAdd;
+document.getElementById("kwadd").onkeydown=function(e){
+  if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();kwAdd();}
+};
 document.getElementById("kwmsel_all").onclick=function(){
   kwmRows().forEach(function(k){KWM.sel[k.term]=1;});drawKwm();};
 document.getElementById("kwmsel_none").onclick=function(){KWM.sel={};drawKwm();};
